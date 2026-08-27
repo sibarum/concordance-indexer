@@ -1,0 +1,14 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+
+# Maven dependency:build-classpath scratch output
+cp.txt
+cp-*.txt
+
+# Scratch output from the throwaway harnesses in docs/probes (see docs/javaparser-evaluation.md).
+jpjar.txt
+*.log
+capcache/

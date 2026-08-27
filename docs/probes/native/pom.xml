@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>probe</groupId>
+    <artifactId>native-solver-probe</artifactId>
+    <version>1</version>
+
+    <name>native-solver-probe</name>
+    <description>
+        Does the JavaParser symbol solver survive GraalVM native-image? Exercises the three type solvers a real
+        indexer would need: source (JavaParserTypeSolver), dependency jars (JarTypeSolver), and the JDK
+        (ReflectionTypeSolver, the one expected to break under a closed world).
+    </description>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <javaparser.version>3.28.2</javaparser.version>
+        <!-- Overridable so the two probes build to distinct binaries:
+             -Dapp.mainClass=probe.JarDiag -Dimage.name=jar-diag -->
+        <app.mainClass>probe.NativeProbe</app.mainClass>
+        <image.name>solver-probe</image.name>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-symbol-solver-core</artifactId>
+            <version>${javaparser.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest><mainClass>${app.mainClass}</mainClass></manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Single native executable: mvn -Pnative -DskipTests package -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.6</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals><goal>compile-no-fork</goal></goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <imageName>${image.name}</imageName>
+                            <mainClass>${app.mainClass}</mainClass>
+                            <buildArgs>
+                                <buildArg>-O1</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--report-unsupported-elements-at-runtime</buildArg>
+                                <!-- Windows Defender quarantines the helper .exe files native-image drops in
+                                     the system temp dir; keep them under target/ instead. -->
+                                <buildArg>-H:TempDirectory=${project.build.directory}/svm-tmp</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

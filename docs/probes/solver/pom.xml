@@ -1,0 +1,12 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>probe</groupId><artifactId>solver-probe</artifactId><version>1</version>
+  <properties><maven.compiler.release>25</maven.compiler.release></properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.github.javaparser</groupId>
+      <artifactId>javaparser-symbol-solver-core</artifactId>
+      <version>3.28.2</version>
+    </dependency>
+  </dependencies>
+</project>
