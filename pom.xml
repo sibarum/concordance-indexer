@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>sibarum.concordance</groupId>
+    <artifactId>concordance-indexer</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Concordance Indexer</name>
+    <description>
+        A source index for structural, logical and inductive queries over Java. The first artifact it builds from
+        a Maven project is a receipt-graph: a control-logic graph whose cycles carry inductive hypotheses, in the
+        sense Cardinal defines. Cardinal supplies the symbolic vocabulary and the reasoning; the graph types are
+        ours, in our own namespace, and the two stay interoperable without either owing the other compatibility.
+    </description>
+
+    <modules>
+        <!-- The receipt-graph itself: our node/branch/receipt types, the method identity that keys them, and the
+             mapping from Java types onto Cardinal sorts. Depends on cardinal-core and nothing else. -->
+        <module>concordance-graph</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Cardinal: SymExpr, Sort, and the public reasoning in cardinal-core (BoundAnalysis, SignAnalysis,
+             Refinements, Simplifier, Substitute, HypothesisRules, Coinduction). Installed to the local .m2 by
+             `mvn install` in the sibling cardinal repo, the same arrangement vexelray has with supirvast. -->
+        <cardinal.version>1.0-SNAPSHOT</cardinal.version>
+        <!-- JavaParser 3.28.2 parses Java 25 completely; we drive it at LanguageLevel.RAW so nothing reflects.
+             See docs/javaparser-evaluation.md for why, and for why its symbol solver is test-scope only. -->
+        <javaparser.version>3.28.2</javaparser.version>
+        <junit.version>5.11.4</junit.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Reactor-internal modules: children reference these without a version. -->
+            <dependency>
+                <groupId>sibarum.concordance</groupId>
+                <artifactId>concordance-graph</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>sibarum.cardinal</groupId>
+                <artifactId>cardinal-core</artifactId>
+                <version>${cardinal.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.github.javaparser</groupId>
+                <artifactId>javaparser-core</artifactId>
+                <version>${javaparser.version}</version>
+            </dependency>
+            <!-- Test scope only, and deliberately so: the symbol solver is a 99.5%-accurate oracle to
+                 differential-test our own resolution against, and cannot cross native-image. -->
+            <dependency>
+                <groupId>com.github.javaparser</groupId>
+                <artifactId>javaparser-symbol-solver-core</artifactId>
+                <version>${javaparser.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.2</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>
