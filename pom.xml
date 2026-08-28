@@ -18,6 +18,10 @@
     </description>
 
     <modules>
+        <!-- What a Maven project is, as far as indexing is concerned: a reactor of modules, each with source
+             roots holding .java files. Reads poms directly, because the shipped binary cannot assume Maven is
+             installed on the machine it runs on. Depends on nothing. -->
+        <module>concordance-project</module>
         <!-- Java source to Cardinal receipt-graph: the node identity Java needs, the mapping from Java types onto
              Cardinal sorts, and the drafter that transcribes a method body into branches. -->
         <module>concordance-drafter</module>
@@ -41,6 +45,11 @@
     <dependencyManagement>
         <dependencies>
             <!-- Reactor-internal modules: children reference these without a version. -->
+            <dependency>
+                <groupId>sibarum.concordance</groupId>
+                <artifactId>concordance-project</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>sibarum.concordance</groupId>
                 <artifactId>concordance-drafter</artifactId>
