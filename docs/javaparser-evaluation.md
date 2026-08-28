@@ -109,7 +109,7 @@ one of which is fixable with configuration.
 
 | Component | Under native-image |
 | --- | --- |
-| `javaparser-core` (parsing) | **Works.** Needs reflect-config for the AST metamodel's field access — the tracing agent caught `VariableDeclarationExpr.variables`; a real workload needs the whole `com.github.javaparser.ast` package registered |
+| `javaparser-core` (parsing) | **Works**, and needs no configuration at all once the validators are off — see below |
 | `JavaParserTypeSolver` | Works, and is useless alone: every signature mentions a JDK type, so source-only resolution fails on `String` |
 | `JarTypeSolver` | **Broken outright.** javassist cannot read a jar inside a native image — `ClassPool.appendClassPath(jar); pool.get(fqn)` throws `NotFoundException`, while byte-identical code succeeds on the JVM |
 | `ReflectionTypeSolver` | **Fundamentally closed-world.** It enumerates `ModuleLayer.boot().modules()` at *runtime*, so only pre-registered types resolve. `String`, `List`, `Stream` passed; `TreeMap.firstKey()`, `LocalDate.plusDays()`, `Pattern.matcher()` all failed — those three were deliberately absent from the agent trace |
@@ -120,18 +120,73 @@ the failure: it is *silent*. Both degrade into ordinary `UnsolvedSymbolException
 symbol genuinely does not exist" — an indexer built on them would quietly return incomplete answers in the native
 binary and complete ones on the JVM.
 
-Two build notes, since they cost time:
+**No javaparser jar ships GraalVM reachability metadata** — neither core, nor symbol-solver, nor javassist.
+Successful builds took 17–26s for a 19.8 MB binary.
 
-- **No javaparser jar ships GraalVM reachability metadata.** Neither core, nor symbol-solver, nor javassist.
+### Why the parser reflects at all, and how to stop it
 
-Successful builds took 21–26s for a 19.8 MB binary. Getting a successful build is the problem — see below.
+Out of the box, parsing in a native image dies at `NoSuchFieldError: variables` before reaching any of the above.
+It is worth knowing exactly where that comes from, because the obvious reading — "JavaParser reflects over its
+AST, so it needs the whole `ast` package registered" — is wrong, and the real answer is cheaper.
 
-## Smart App Control blocks native-image builds on this machine
+The stack is unambiguous:
+
+```
+NoSuchFieldError: variables
+  at com.github.javaparser.metamodel.PropertyMetaModel.getValue(PropertyMetaModel.java:263)
+  at ...validator.language_level_validations.chunks.CommonValidators.lambda$new$7(CommonValidators.java:78)
+  at ...validator.TreeVisitorValidator.accept
+  at ...ParserConfiguration$2.postProcess(ParserConfiguration.java:368)
+  at com.github.javaparser.JavaParser.parse(JavaParser.java:128)
+```
+
+It is a **post-parse validator**, not the parser and not the symbol solver. JavaParser ships a generated
+*metamodel*: a data description of every AST node type and its properties. One `CommonValidators` rule is written
+generically against that description — "for every property the metamodel flags as non-empty, check the value is
+not empty" — and to get from a property *name* to the actual field it calls:
+
+```java
+for (Class<?> c = node.getClass(); c != null; c = c.getSuperclass())
+    for (Field f : c.getDeclaredFields())
+        if (f.getName().equals(getName())) { f.setAccessible(true); return f.get(node); }
+throw new NoSuchFieldError(getName());
+```
+
+So the reflection is a string-keyed bridge from generated metadata back to real fields. `variables` surfaces first
+because `VariableDeclarationExpr.variables` is flagged non-empty and most files declare a variable early. This is
+avoidable design rather than a necessity — JavaParser already generates visitors, clone support and the metamodel
+classes, so it could equally have generated a direct accessor per property. It costs a class-hierarchy walk and a
+`getDeclaredFields()` array per checked property on every node of every parse, on the JVM too.
+
+Measured, native image, **zero** reachability metadata:
+
+| Parser configuration | Result | Comments attached? |
+| --- | --- | --- |
+| `JAVA_25`, default processors | `NoSuchFieldError: variables` | — |
+| `JAVA_25` + `getProcessors().clear()` | parses, 43 nodes | **no — all comment attribution lost** |
+| `LanguageLevel.RAW` | parses, 44 nodes | yes, javadoc and markdown comments attached |
+
+**`RAW` is the setting we want.** It skips the validators, so nothing reflects and no metadata is needed; it keeps
+comment attribution, which clearing the processor list destroys; and it still parses the newest grammar, since
+JavaParser's grammar is level-independent and the language level only drives validation. Lexical preservation is
+unaffected in all three configurations — round-trip stayed byte-exact and a rename-then-print kept every comment.
+
+What `RAW` gives up is JavaParser's language-level checking, which this document already argues is not worth
+having: it is uneven (§ *Parsing covers Java 25 completely*), and feature usage should be derived from AST node
+types rather than from parse failures.
+
+## Smart App Control blocks native-image builds
+
+**Resolved** on this machine — Smart App Control was turned off, and five consecutive builds then succeeded in
+25–29s each, where the same directory had been running at roughly one success in four. The diagnosis stays on
+the record because the symptom is deeply misleading, it will recur on any Windows machine with Smart App Control
+enabled, and the two obvious fixes both fail.
 
 This is an environment finding rather than a JavaParser one, but it affects every native binary this project will
-ever produce, so it belongs on the record.
+ever produce.
 
-Native-image builds fail intermittently — 3 of 3, then 1 of 2, then 0 of 3 across a session — always presenting as:
+Native-image builds failed intermittently — 3 of 3, then 1 of 2, then 0 of 3 in a session — always presenting
+as:
 
 ```
 VMError$HostedError: Unable to run '…\svm-tmp\SVM-…\LocaleDirectives.exe' to compute offsets in C data
@@ -173,13 +228,12 @@ Three things follow that are easy to get wrong:
 - **The blocked files are not damaged.** Every helper `.exe` survives the failed build and runs fine when invoked
   by hand, exit 0. Anything that looks like quarantine or corruption is a misreading.
 
-What actually works, in rough order of cost:
+What works, in rough order of cost:
 
 1. **Retry, and expect to retry a lot.** Failure is instant and loud — 2–14s, before any real compilation — so
-   attempts are cheap. Across roughly 35 builds this session the success rate ran about **1 in 4** under
+   attempts are cheap. Across roughly 35 builds under enforcement the success rate ran about **1 in 4** under
    `Documents\GitHub` and about **1 in 2** under `AppData\Local\Temp`; too small a sample to call location
-   causal, but a loop of ~10 attempts reliably landed a build. Every successful build in this document came from
-   such a loop.
+   causal, but a loop of ~10 attempts reliably landed a build.
 
    ```bash
    for i in $(seq 1 10); do mvn -B -Pnative -DskipTests package && break; done
@@ -187,10 +241,11 @@ What actually works, in rough order of cost:
 
 2. **Build release binaries in CI.** A GitHub Actions Windows runner has no Smart App Control, so it is
    deterministic there. Worth doing regardless, once we ship anything.
-3. **Turn Smart App Control off.** Settings → Privacy & security → Windows Security → App & browser control →
-   Smart App Control. Note carefully: **this is one-way.** Once disabled, Windows cannot re-enable it without a
-   clean OS install. That is a machine-policy decision, not a build configuration, and should not be made
-   casually for a build convenience.
+3. **Turn Smart App Control off** — what was done here, and it is a complete fix: 5 of 5 builds succeeded
+   afterwards where the same directory had been at roughly 1 in 4. Settings → Privacy & security → Windows
+   Security → App & browser control → Smart App Control. Note for anyone repeating it: **this is one-way.** Once
+   disabled, Windows cannot re-enable it without a clean OS install, so it is a machine-policy decision rather
+   than a build setting.
 
 One lead that did **not** pan out, recorded so it is not re-attempted blind. GraalVM can cache the C offsets so
 the helpers never run — `-H:+NewCAPCache -H:CAPCacheDir=<dir> -H:+ExitAfterCAPCache` to record, `-H:CAPCacheDir`
@@ -206,6 +261,9 @@ move into a tight loop.
 
 - **Borrow the front end.** `javaparser-core` parses Java 25 completely, preserves every byte for rewriting, and
   survives native-image. There is no reason to hand-write a Java parser.
+- **Parse at `LanguageLevel.RAW`, on both surfaces.** It is the one configuration that needs no reachability
+  metadata, keeps comments attached, and still accepts the newest grammar. We do our own validation anyway, so
+  JavaParser's validators are pure cost — and they are the only thing in the parse path that reflects.
 - **Build the resolver.** Our resolution layer reads bytes and never reflects: dependency jars through our own
   class-file reader (constant pool plus the method and field tables), and the JDK through the `jrt:` filesystem
   over `$JAVA_HOME/lib/modules`. Both are pure file I/O, which is precisely where JavaParser's two solvers fail
@@ -231,7 +289,8 @@ code — no module of ours depends on them, and they can be deleted once this de
 | [`probes/solver/Java25Res.java`](probes/solver/Java25Res.java) | Resolution *through* Java 25 constructs |
 | [`probes/solver/Generics.java`](probes/solver/Generics.java) | The generic-inference gap, isolated to one pattern |
 | [`probes/solver/Jars.java`](probes/solver/Jars.java) | `JarTypeSolver` readability across a real classpath |
-| [`probes/native/`](probes/native) | JVM-vs-native comparison; `NativeProbe` for the four solvers, `JarDiag` for the javassist failure |
+| [`probes/solver/ProcessorCost.java`](probes/solver/ProcessorCost.java) | What clearing the processor list costs — comment attribution — and that `RAW` keeps it |
+| [`probes/native/`](probes/native) | JVM-vs-native comparison; `NativeProbe` for the four solvers, `JarDiag` for the javassist failure, `NoReflect` for the validator reflection and the `RAW` escape |
 
 The two `pom.xml` files exist only to pull the dependencies down and, for `native/`, to run
 `native-maven-plugin`. Build a classpath once:
@@ -279,6 +338,16 @@ it overwrites the binary above:
 mvn -Pnative -DskipTests package -Dapp.mainClass=probe.JarDiag -Dimage.name=jar-diag && ./target/jar-diag.exe "$(cat jpjar.txt)"
 ```
 
-`corpus/UsesUnseenJdk.java` matters to the method: it was written **after** the tracing agent ran, so nothing it
-touches is pre-registered. That is what turns "the closed world is a theoretical concern" into three concrete
-failures.
+Two files in `native/` are load-bearing to the method and easy to mistake for incidental:
+
+- **`corpus/UsesUnseenJdk.java`** was written *after* the tracing agent ran, so nothing it touches is
+  pre-registered. That is what turns "the closed world is a theoretical concern" into three concrete failures.
+- **`src/main/resources/META-INF/native-image/probe/native-solver-probe/reachability-metadata.json`** is the
+  agent's output, and `NativeProbe` scores 4/9 only because it is present. Remove it and every solver fails
+  identically at construction with `NoSuchFieldError: variables`, for 0/9. Keep the two native failures distinct:
+  that one is a missing-config problem, fixable outright by parsing at `RAW` (`NoReflect` demonstrates it), while
+  the javassist and closed-world failures are not fixable at any acceptable price.
+
+  **Use `mvn clean` when testing this.** A plain `mvn package` leaves the previous run's copy of the metadata in
+  `target/classes`, so removing the source file appears to change nothing — a stale-resource trap that produced a
+  false "the metadata is not needed" reading here before clean builds settled it.

@@ -56,7 +56,7 @@ public class NativeProbe {
             check("Alpha -> Beta.helper()", find(cu, "helper"));
             check("Alpha -> own twice()", find(cu, "twice"));
         } catch (Throwable t) {
-            System.out.println("  SOLVER CONSTRUCTION FAILED: " + t);
+            System.out.println("  SOLVER CONSTRUCTION FAILED:"); t.printStackTrace(System.out);
             fail++;
         }
 
@@ -81,7 +81,7 @@ public class NativeProbe {
                 CompilationUnit cu = p.parse(corpus.resolve("UsesJar.java")).getResult().orElseThrow();
                 check("JavaParser API from jar", find(cu, "getLanguageLevel"));
             } catch (Throwable t) {
-                System.out.println("  SOLVER CONSTRUCTION FAILED: " + t);
+                System.out.println("  SOLVER CONSTRUCTION FAILED:"); t.printStackTrace(System.out);
                 fail++;
             }
         }
@@ -101,7 +101,7 @@ public class NativeProbe {
             check("List.of(..).size()", find(cu, "size"));
             check("Map.Entry via stream", find(cu, "toList"));
         } catch (Throwable t) {
-            System.out.println("  SOLVER CONSTRUCTION FAILED: " + t);
+            System.out.println("  SOLVER CONSTRUCTION FAILED:"); t.printStackTrace(System.out);
             fail++;
         }
 
@@ -125,7 +125,7 @@ public class NativeProbe {
                 check("LocalDate.plusDays()", find(cu, "plusDays"));
                 check("Pattern.matcher()", find(cu, "matcher"));
             } catch (Throwable t) {
-                System.out.println("  SOLVER CONSTRUCTION FAILED: " + t);
+                System.out.println("  SOLVER CONSTRUCTION FAILED:"); t.printStackTrace(System.out);
                 fail++;
             }
         }
