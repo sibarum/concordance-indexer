@@ -1,4 +1,4 @@
-package sibarum.concordance.graph;
+package sibarum.concordance.drafter;
 
 import sibarum.cardinal.core.symbolic.SymExpr;
 import sibarum.cardinal.core.types.Sort;

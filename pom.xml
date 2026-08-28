@@ -12,24 +12,25 @@
     <name>Concordance Indexer</name>
     <description>
         A source index for structural, logical and inductive queries over Java. The first artifact it builds from
-        a Maven project is a receipt-graph: a control-logic graph whose cycles carry inductive hypotheses, in the
-        sense Cardinal defines. Cardinal supplies the symbolic vocabulary and the reasoning; the graph types are
-        ours, in our own namespace, and the two stay interoperable without either owing the other compatibility.
+        a Maven project is a receipt-graph: a control-logic graph whose cycles carry inductive hypotheses. The
+        graph, the notary and the issuers are Cardinal's, and there is exactly one of each — Concordance is a
+        second drafter for it, reading Java where Cardinal's own drafter reads Pontif IR.
     </description>
 
     <modules>
-        <!-- The receipt-graph itself: our node/branch/receipt types, the method identity that keys them, and the
-             mapping from Java types onto Cardinal sorts. Depends on cardinal-core and nothing else. -->
-        <module>concordance-graph</module>
+        <!-- Java source to Cardinal receipt-graph: the node identity Java needs, the mapping from Java types onto
+             Cardinal sorts, and the drafter that transcribes a method body into branches. -->
+        <module>concordance-drafter</module>
     </modules>
 
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- Cardinal: SymExpr, Sort, and the public reasoning in cardinal-core (BoundAnalysis, SignAnalysis,
-             Refinements, Simplifier, Substitute, HypothesisRules, Coinduction). Installed to the local .m2 by
-             `mvn install` in the sibling cardinal repo, the same arrangement vexelray has with supirvast. -->
+        <!-- Cardinal: the receipt-graph types, the notary, the issuers, and the symbolic vocabulary and reasoning
+             underneath them. We own Cardinal, so a change Java needs is made there rather than worked around
+             here. Installed to the local .m2 by `mvn install` in the sibling cardinal repo, the same arrangement
+             vexelray has with supirvast. Note the version is 1.0-SNAPSHOT, not 0.1.0. -->
         <cardinal.version>1.0-SNAPSHOT</cardinal.version>
         <!-- JavaParser 3.28.2 parses Java 25 completely; we drive it at LanguageLevel.RAW so nothing reflects.
              See docs/javaparser-evaluation.md for why, and for why its symbol solver is test-scope only. -->
@@ -42,13 +43,13 @@
             <!-- Reactor-internal modules: children reference these without a version. -->
             <dependency>
                 <groupId>sibarum.concordance</groupId>
-                <artifactId>concordance-graph</artifactId>
+                <artifactId>concordance-drafter</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>sibarum.cardinal</groupId>
-                <artifactId>cardinal-core</artifactId>
+                <artifactId>cardinal-receipts</artifactId>
                 <version>${cardinal.version}</version>
             </dependency>
             <dependency>

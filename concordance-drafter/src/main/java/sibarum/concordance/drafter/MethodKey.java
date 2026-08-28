@@ -1,19 +1,20 @@
-package sibarum.concordance.graph;
+package sibarum.concordance.drafter;
 
 import java.util.List;
 
 /**
- * Identity of a method, and therefore of a {@link Node}.
+ * Identity of a Java method, and the {@link sibarum.cardinal.receipts.Node#id()} it is registered under.
  *
- * <p>Cardinal keys a node by function name and defers the question of which overload a call dispatches to.
- * Java does not allow that deferral: overloading is pervasive, the same simple name lives in unrelated types,
- * and the no-duplicate-edges rule only does its work — well-foundedness as a graph property — if a back-reference
- * lands on exactly one node. So identity here is the triple that Java itself uses to distinguish methods:
- * declaring type, name, and the erased parameter types.
+ * <p>Cardinal's node id is an opaque string, so each drafter can be exactly as precise as its language allows.
+ * Drafting from Pontif IR the id is a function name and overloads share it — the long-standing deferral. Java
+ * cannot defer it: overloading is pervasive, the same simple name recurs across unrelated types, and the
+ * no-duplicate-edges rule only does its work — well-foundedness as a property of the graph — when a
+ * back-reference lands on exactly one node. So a Java id is the triple Java itself distinguishes methods by:
+ * declaring type, name, and erased parameter types, rendered by {@link #canonical()}.
  *
- * <p>Parameter types are stored as written-and-then-resolved strings rather than {@link
- * sibarum.cardinal.core.types.Sort}s. A key must be comparable and hashable long before refinement predicates are
- * known, and two overloads differing only in a refinement do not exist in Java.
+ * <p>Parameter types are strings rather than {@link sibarum.cardinal.core.types.Sort}s. A key must be comparable
+ * and hashable long before refinement predicates are known, and two overloads differing only in a refinement do
+ * not exist in Java.
  */
 public record MethodKey(String declaringType, String methodName, List<String> paramTypes) {
 

@@ -10,19 +10,20 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>concordance-graph</artifactId>
+    <artifactId>concordance-drafter</artifactId>
 
-    <name>concordance-graph</name>
+    <name>concordance-drafter</name>
     <description>
-        The receipt-graph as data: nodes keyed by method identity, branches carrying guards and transcribed
-        facts, and calls that point back rather than re-expand. Knows about Cardinal sorts and symbolic
-        expressions; knows nothing about JavaParser, Maven, or how a graph gets built.
+        Java source to Cardinal receipt-graph. Holds the two things Java needs that Cardinal has no view of: the
+        method identity that lets a back-reference land on one overload rather than several, and the mapping from
+        Java types onto Cardinal sorts — where naming a sort wrongly would route double arithmetic through
+        integer-strict reasoning. The graph types themselves are Cardinal's; nothing is redefined here.
     </description>
 
     <dependencies>
         <dependency>
             <groupId>sibarum.cardinal</groupId>
-            <artifactId>cardinal-core</artifactId>
+            <artifactId>cardinal-receipts</artifactId>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
