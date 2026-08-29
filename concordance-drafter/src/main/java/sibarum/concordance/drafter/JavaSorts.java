@@ -3,6 +3,7 @@ package sibarum.concordance.drafter;
 import sibarum.cardinal.core.symbolic.SymExpr;
 import sibarum.cardinal.core.types.Sort;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -38,6 +39,8 @@ public final class JavaSorts {
     public static final Sort STRING = Sort.of("String");
     /** A method that returns nothing still needs a result var for the graph's shape; it carries this. */
     public static final Sort VOID = Sort.of("Void");
+    /** The arm every Java method's result can land in, because any Java method can complete abruptly. */
+    public static final Sort THROWABLE = Sort.of("Throwable");
 
     /** Java types whose values are discrete, and so belong to the integer domain. */
     private static final Map<String, Sort> DISCRETE = Map.ofEntries(
@@ -89,6 +92,56 @@ public final class JavaSorts {
             return of(javaTypeName);
         }
         return Sort.refined(of(javaTypeName).name(), predicate);
+    }
+
+    /**
+     * A method's result sort: the declared type, or a {@link Throwable}, because any Java method may complete
+     * abruptly.
+     *
+     * <p>Declaring {@code int} alone is a lie — the method returns an {@code int} <em>or</em> it throws — and the
+     * lie is what leaves a throwing path with no result and the graph partial. As a union every path yields a
+     * value of the result sort; the arms differ, not the totality. See {@code docs/exceptions-as-values.md}.
+     *
+     * <p>The union is not something later reasoning has to carry: a caller destructures it at the call site, so
+     * it exists between the call and the match and nowhere else.
+     */
+    public static Sort resultOf(String javaTypeName) {
+        return orThrowable(of(javaTypeName));
+    }
+
+    /** {@code sort | Throwable}, idempotent — a sort that already admits a throwable is returned unchanged. */
+    public static Sort orThrowable(Sort sort) {
+        if (sort == null) {
+            throw new IllegalArgumentException("sort must be non-null");
+        }
+        if (THROWABLE.name().equals(sort.name())) {
+            return sort;
+        }
+        List<Sort> arms = sort.unionBranches();
+        if (arms != null) {
+            return arms.stream().anyMatch(a -> THROWABLE.name().equals(a.name()))
+                    ? sort
+                    : Sort.union(concat(arms, THROWABLE));
+        }
+        return Sort.union(List.of(sort, THROWABLE));
+    }
+
+    /**
+     * The arms of a result sort that carry values rather than throwables — what a caller binds when it
+     * destructures, and what a refinement attaches to.
+     */
+    public static List<Sort> valueArms(Sort sort) {
+        List<Sort> arms = sort.unionBranches();
+        if (arms == null) {
+            return THROWABLE.name().equals(sort.name()) ? List.of() : List.of(sort);
+        }
+        return arms.stream().filter(a -> !THROWABLE.name().equals(a.name())).toList();
+    }
+
+    private static List<Sort> concat(List<Sort> arms, Sort extra) {
+        List<Sort> out = new java.util.ArrayList<>(arms);
+        out.add(extra);
+        return out;
     }
 
     /**

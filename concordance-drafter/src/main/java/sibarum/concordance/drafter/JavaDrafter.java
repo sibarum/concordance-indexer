@@ -120,7 +120,9 @@ public final class JavaDrafter {
             this.owner = owner;
             this.method = method;
             this.key = keyOf(owner, method);
-            this.resultVar = new Var("r_0", JavaSorts.of(TypeNames.of(method.getType())));
+            // T | Throwable, because any Java method may complete abruptly. A throwing path then produces a
+            // result in the other arm rather than producing none, and the node is total.
+            this.resultVar = new Var("r_0", JavaSorts.resultOf(TypeNames.of(method.getType())));
         }
 
         List<Node> draft() {

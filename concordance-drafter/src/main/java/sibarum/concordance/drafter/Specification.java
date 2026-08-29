@@ -51,7 +51,7 @@ public final class Specification {
 
             Var resultVar = resultPredicate == null ? node.resultVar()
                     : new Var(node.resultVar().name(),
-                              Sort.refined(node.resultVar().sort().name(), resultPredicate));
+                              refineValueArm(node.resultVar().sort(), resultPredicate));
 
             List<Branch> branches = new ArrayList<>(node.branches().size());
             for (Branch branch : node.branches()) {
@@ -81,8 +81,34 @@ public final class Specification {
             out.add(predicate == null ? call
                     : new CallRef(call.targetId(), call.argBindings(),
                                   new Var(call.resultVar().name(),
-                                          Sort.refined(call.resultVar().sort().name(), predicate))));
+                                          refineValueArm(call.resultVar().sort(), predicate))));
         }
         return out;
+    }
+
+    /**
+     * Attaches a predicate to the value arm of a result sort, leaving the {@code Throwable} arm alone.
+     *
+     * <p>{@code Sort.refined} builds a sort carrying only a name and a predicate, so refining a union directly
+     * would keep the name {@code "Int | Throwable"} and silently discard the arms — after which the issuer sees a
+     * refined non-union and obliges the predicate on throwing paths too. Refining the arm instead yields
+     * {@code Int[@>=1] | Throwable}, which reads as what was meant: when it returns normally the result is at
+     * least 1, and it may instead throw.
+     *
+     * <p>A sort with no throwable arm is refined whole, which is the Pontif-drafted case and the one that was
+     * always here.
+     */
+    private static Sort refineValueArm(Sort sort, SymExpr predicate) {
+        List<Sort> arms = sort.unionBranches();
+        if (arms == null) {
+            return Sort.refined(sort.name(), predicate);
+        }
+        List<Sort> refined = new ArrayList<>(arms.size());
+        for (Sort arm : arms) {
+            refined.add(JavaSorts.THROWABLE.name().equals(arm.name())
+                    ? arm
+                    : Sort.refined(arm.name(), predicate));
+        }
+        return Sort.union(refined);
     }
 }
