@@ -1,0 +1,135 @@
+package sibarum.concordance.cli;
+
+import sibarum.concordance.index.Index;
+import sibarum.concordance.index.IndexBuilder;
+import sibarum.concordance.index.Reference;
+import sibarum.concordance.index.Symbol;
+import sibarum.concordance.project.MavenProject;
+import sibarum.concordance.project.MavenProjectReader;
+
+import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.file.Path;
+import java.util.List;
+
+/**
+ * Concordance from a terminal.
+ *
+ * <pre>{@code
+ * concordance <project> names <fragment>
+ * concordance <project> usages <name>
+ * concordance <project> impls <type> [method]
+ * concordance <project> summary
+ * }</pre>
+ *
+ * <p>Output is one result per line, {@code path:line} first, so it pipes into anything that opens files —
+ * {@code concordance . usages area | cut -d' ' -f1} and onwards. The editor's commands present the same index as
+ * rows instead, which is the same information shaped for a shell that has tables.
+ */
+public final class Concordance {
+
+    private Concordance() {}
+
+    public static void main(String[] args) {
+        System.exit(run(args, System.out, System.err));
+    }
+
+    /** Separated from {@link #main} so a test can drive it without exiting the JVM. */
+    public static int run(String[] args, PrintStream out, PrintStream err) {
+        if (args.length < 2) {
+            usage(err);
+            return 2;
+        }
+        Path root = Path.of(args[0]);
+        String command = args[1];
+
+        Index index;
+        MavenProject project;
+        long started = System.nanoTime();
+        try {
+            project = MavenProjectReader.read(root);
+            index = IndexBuilder.build(project);
+        } catch (IOException e) {
+            err.println("cannot index " + root + ": " + e.getMessage());
+            return 1;
+        }
+        long millis = (System.nanoTime() - started) / 1_000_000;
+
+        switch (command) {
+            case "summary" -> {
+                int files;
+                try {
+                    files = project.javaFiles().size();
+                } catch (IOException e) {
+                    files = -1;
+                }
+                out.println(root + ": " + index.summary());
+                out.println("  " + project.modules().size() + " modules, " + files
+                        + " files, indexed in " + millis + " ms");
+            }
+            case "names" -> {
+                if (args.length < 3) return missing(err, "names", "<fragment>");
+                List<Symbol> hits = index.namesContaining(args[2]);
+                hits.forEach(s -> out.println(line(s)));
+                note(out, hits.size(), "declarations whose name contains " + args[2], millis);
+            }
+            case "usages" -> {
+                if (args.length < 3) return missing(err, "usages", "<name>");
+                List<Reference> uses = index.usagesOf(args[2]);
+                uses.forEach(r -> out.printf("%s:%d  %-10s in %s%n",
+                        r.at().file(), r.at().line(), r.kind(), r.from()));
+                note(out, uses.size(), "uses of " + args[2], millis);
+            }
+            case "impls" -> {
+                if (args.length < 3) return missing(err, "impls", "<type> [method]");
+                List<Symbol> hits = args.length > 3
+                        ? index.implementationsOfMethod(args[2], args[3])
+                        : index.implementationsOf(args[2]);
+                hits.forEach(s -> out.println(line(s)));
+                note(out, hits.size(), args.length > 3
+                        ? "implementations of " + args[2] + "." + args[3]
+                        : "types implementing or extending " + args[2], millis);
+            }
+            default -> {
+                err.println("no such query: " + command);
+                usage(err);
+                return 2;
+            }
+        }
+        return 0;
+    }
+
+    private static String line(Symbol symbol) {
+        return symbol.at().file() + ":" + symbol.at().line()
+                + "  " + pad(symbol.kind().name(), 10)
+                + " " + pad(symbol.name(), 28)
+                + " " + symbol.owner();
+    }
+
+    private static void note(PrintStream out, int count, String what, long millis) {
+        out.println("-- " + count + " " + what + " (indexed in " + millis + " ms)");
+    }
+
+    private static int missing(PrintStream err, String command, String expected) {
+        err.println(command + " needs an argument: " + expected);
+        return 2;
+    }
+
+    private static String pad(String s, int width) {
+        return s.length() >= width ? s : s + " ".repeat(width - s.length());
+    }
+
+    private static void usage(PrintStream err) {
+        err.println("""
+                concordance <project> <query> [args]
+
+                  summary                     what the index holds
+                  names   <fragment>          declarations whose name contains a fragment
+                  usages  <name>              where a name is used
+                  impls   <type> [method]     types implementing a type, or methods implementing its method
+
+                <project> is a directory holding a pom.xml, or the pom.xml itself. Names are matched exactly and
+                without resolution, so usages over-approximate: everything real is found, and some extras with it.
+                """);
+    }
+}

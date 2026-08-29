@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>sibarum.concordance</groupId>
+        <artifactId>concordance-indexer</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>concordance-cli</artifactId>
+
+    <name>concordance-cli</name>
+    <description>
+        Concordance from a terminal: index a project and query it. The same index the editor commands use, with
+        an argv in front of it, so the thing can be demonstrated and scripted without a window.
+    </description>
+
+    <properties>
+        <app.mainClass>sibarum.concordance.cli.Concordance</app.mainClass>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.concordance</groupId>
+            <artifactId>concordance-index</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>sibarum.concordance</groupId>
+            <artifactId>concordance-project</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest><mainClass>${app.mainClass}</mainClass></manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+          Single native executable: mvn -Pnative -DskipTests package. Nothing in the index reflects — the parser
+          runs at LanguageLevel.RAW, which is why — so this needs no reachability metadata. See
+          docs/javaparser-evaluation.md.
+        -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.6</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals><goal>compile-no-fork</goal></goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <imageName>concordance</imageName>
+                            <mainClass>${app.mainClass}</mainClass>
+                            <buildArgs>
+                                <buildArg>-O2</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <!-- native-image writes helper executables and runs them; keeping them under
+                                     target/ rather than the system temp is one less thing for a code-integrity
+                                     policy to object to. See docs/javaparser-evaluation.md. -->
+                                <buildArg>-H:TempDirectory=${project.build.directory}/svm-tmp</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

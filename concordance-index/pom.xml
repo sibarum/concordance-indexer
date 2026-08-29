@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>sibarum.concordance</groupId>
+        <artifactId>concordance-indexer</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>concordance-index</artifactId>
+
+    <name>concordance-index</name>
+    <description>
+        The structural index: what is declared, where, and what refers to it. Answers the questions an editor
+        asks -- find usages, find implementations, find a name -- which are about declarations and references
+        rather than about paths and equations, and so are a different artifact from the receipt-graph.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.concordance</groupId>
+            <artifactId>concordance-project</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+    </dependencies>
+</project>
