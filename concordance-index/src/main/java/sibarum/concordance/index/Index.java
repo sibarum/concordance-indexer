@@ -8,7 +8,6 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -37,34 +36,35 @@ public record Index(List<Symbol> symbols, List<Reference> references) {
     // --- find names with a substring ----------------------------------------------------------
 
     /**
-     * Declarations whose simple name contains {@code fragment}, case-insensitively.
+     * Declarations whose simple name answers {@code fragment} — exactly, but for case, as a prefix, as a
+     * substring, by camel humps ({@code MPR} finds {@code MavenProjectReader}), or as a subsequence.
      *
-     * <p>Exact matches come first, then names that start with the fragment, then the rest — so typing a whole
-     * name does not bury it under everything that merely contains it.
+     * <p>This is the browsing query, so it keeps every tier and sorts by how well each name fits: exact matches
+     * first and the loosest guesses last. Typing a whole name does not bury it under everything around it, and
+     * typing a half-remembered one still gets somewhere. See {@link Names}.
      */
     public List<Symbol> namesContaining(String fragment) {
-        String needle = fragment.toLowerCase(Locale.ROOT);
         return symbols.stream()
-                .filter(s -> s.name().toLowerCase(Locale.ROOT).contains(needle))
+                .filter(s -> Names.matches(s.name(), fragment))
                 .sorted(Comparator
-                        .comparingInt((Symbol s) -> rank(s.name(), fragment))
+                        .comparingInt((Symbol s) -> Names.rank(s.name(), fragment))
                         .thenComparing(Symbol::name)
                         .thenComparing(Symbol::at, BY_POSITION))
                 .toList();
     }
 
-    private static int rank(String name, String fragment) {
-        if (name.equalsIgnoreCase(fragment)) return 0;
-        if (name.toLowerCase(Locale.ROOT).startsWith(fragment.toLowerCase(Locale.ROOT))) return 1;
-        return 2;
-    }
-
     // --- find usages --------------------------------------------------------------------------
 
-    /** Every use of the simple name {@code name}, in source order. */
+    /**
+     * Every use of the simple name {@code name}, in source order.
+     *
+     * <p>The name is read permissively, but only as far as it has to be: if anything is spelled exactly as
+     * asked, those uses are the whole answer, and a looser reading — wrong case, a prefix, camel humps — is
+     * reached only when every tighter one finds nothing. A caller who knows the name gets what they always got;
+     * a caller who half-knows it gets an answer rather than an empty list. See {@link Names}.
+     */
     public List<Reference> usagesOf(String name) {
-        return references.stream()
-                .filter(r -> r.name().equals(name))
+        return Names.bestTier(references, Reference::name, name).stream()
                 .sorted(Comparator.comparing(Reference::at, BY_POSITION))
                 .toList();
     }
@@ -123,6 +123,10 @@ public record Index(List<Symbol> symbols, List<Reference> references) {
      * <p>Transitive because "find implementations" means the leaves, not just the direct children: an interface
      * with an abstract base class between it and the real implementations would otherwise return the abstract
      * class alone, which is never the answer anyone wanted.
+     *
+     * <p>The starting type is the best reading of {@code typeName} among the supertypes anything actually names
+     * — exact if that hits, looser only if it does not. The walk down from there is exact: permissiveness is
+     * for the question, not for the hierarchy, which is known. See {@link Names}.
      */
     public List<Symbol> implementationsOf(String typeName) {
         Map<String, List<Symbol>> bySuper = new LinkedHashMap<>();
@@ -136,7 +140,7 @@ public record Index(List<Symbol> symbols, List<Reference> references) {
         Set<Symbol> found = new LinkedHashSet<>();
         Deque<String> pending = new ArrayDeque<>();
         Set<String> seen = new LinkedHashSet<>();
-        pending.add(simpleName(typeName));
+        pending.addAll(Names.bestTier(bySuper.keySet(), key -> key, simpleName(typeName)));
         while (!pending.isEmpty()) {
             String current = pending.poll();
             if (!seen.add(current)) continue;
@@ -154,14 +158,19 @@ public record Index(List<Symbol> symbols, List<Reference> references) {
     /**
      * Methods that implement or override {@code methodName} — the declarations of that name in every type below
      * the one declaring it.
+     *
+     * <p>Both names are read permissively, and the method name takes its best tier among the methods those
+     * types declare — so {@code Shape, ar} finds {@code area} while {@code Shape, area} still finds only
+     * {@code area}. See {@link Names}.
      */
     public List<Symbol> implementationsOfMethod(String ownerTypeName, String methodName) {
         Set<String> implementors = new LinkedHashSet<>();
         implementationsOf(ownerTypeName).forEach(s -> implementors.add(s.qualified()));
-        return symbols.stream()
+        List<Symbol> declared = symbols.stream()
                 .filter(s -> s.kind() == Symbol.Kind.METHOD)
-                .filter(s -> s.name().equals(methodName))
                 .filter(s -> implementors.contains(s.owner()))
+                .toList();
+        return Names.bestTier(declared, Symbol::name, methodName).stream()
                 .sorted(Comparator.comparing(Symbol::owner).thenComparing(Symbol::at, BY_POSITION))
                 .toList();
     }

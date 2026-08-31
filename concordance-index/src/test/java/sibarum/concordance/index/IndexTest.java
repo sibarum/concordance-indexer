@@ -81,6 +81,72 @@ class IndexTest {
         }
     }
 
+    // --- matching when the caller half-knows the name ------------------------------------------
+
+    @Test
+    void findsANameByItsCamelHumps() {
+        List<Symbol> hits = shapes().namesContaining("sh");
+        assertTrue(hits.stream().anyMatch(s -> s.name().equals("Shape")), names(hits));
+    }
+
+    @Test
+    void findsALongNameByItsHumpsAlone() {
+        Index index = IndexBuilder.buildSource(FAKE, "class MavenProjectReader {}");
+        assertTrue(index.namesContaining("MPR").stream().anyMatch(s -> s.name().equals("MavenProjectReader")),
+                "MPR is how anyone types MavenProjectReader when they are guessing");
+    }
+
+    @Test
+    void findsANameByASubsequenceOfIt() {
+        List<Symbol> hits = shapes().namesContaining("dscb");
+        assertTrue(hits.stream().anyMatch(s -> s.name().equals("describe")),
+                "a caller who dropped the vowels still gets there: " + names(hits));
+    }
+
+    @Test
+    void aLooserMatchSortsBelowATighterOne() {
+        List<Symbol> hits = shapes().namesContaining("Shape");
+        assertEquals("Shape", hits.get(0).name(),
+                "permissiveness must not cost the caller who knows the name: " + names(hits));
+    }
+
+    @Test
+    void anExactUsageQueryIsNotWidened() {
+        List<Reference> exact = shapes().usagesOf("area");
+        assertFalse(exact.isEmpty());
+        assertTrue(exact.stream().allMatch(r -> r.name().equals("area")),
+                "`usages area' must not drag in Square just because it contains the letters: " + exact);
+    }
+
+    @Test
+    void aUsageQueryWidensOnlyWhenTheExactNameFindsNothing() {
+        List<Reference> uses = shapes().usagesOf("AREA");
+        assertFalse(uses.isEmpty(), "nothing is named AREA, so the next-best reading is area");
+        assertTrue(uses.stream().allMatch(r -> r.name().equals("area")), uses.toString());
+    }
+
+    @Test
+    void aHalfTypedTypeStillFindsItsImplementations() {
+        List<String> found = shapes().implementationsOf("Shap").stream().map(Symbol::name).toList();
+        assertTrue(found.contains("Circle"), found.toString());
+        assertTrue(found.contains("Base"), found.toString());
+    }
+
+    @Test
+    void aHalfTypedMethodStillFindsItsImplementations() {
+        List<Symbol> impls = shapes().implementationsOfMethod("Shape", "ar");
+        assertFalse(impls.isEmpty());
+        assertTrue(impls.stream().allMatch(s -> s.name().equals("area")),
+                impls.stream().map(Symbol::name).toList().toString());
+    }
+
+    @Test
+    void aNameNothingAnswersStillAnswersWithNothing() {
+        assertTrue(shapes().namesContaining("zzq").isEmpty());
+        assertTrue(shapes().usagesOf("zzq").isEmpty());
+        assertTrue(shapes().implementationsOf("zzq").isEmpty());
+    }
+
     // --- find implementations -----------------------------------------------------------------
 
     @Test

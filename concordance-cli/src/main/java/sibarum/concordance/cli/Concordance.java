@@ -71,7 +71,7 @@ public final class Concordance {
                 if (args.length < 3) return missing(err, "names", "<fragment>");
                 List<Symbol> hits = index.namesContaining(args[2]);
                 hits.forEach(s -> out.println(line(s)));
-                note(out, hits.size(), "declarations whose name contains " + args[2], millis);
+                note(out, hits.size(), "declarations whose name answers " + args[2], millis);
             }
             case "usages" -> {
                 if (args.length < 3) return missing(err, "usages", "<name>");
@@ -124,12 +124,19 @@ public final class Concordance {
                 concordance <project> <query> [args]
 
                   summary                     what the index holds
-                  names   <fragment>          declarations whose name contains a fragment
+                  names   <fragment>          declarations whose name answers a fragment, best fit first
                   usages  <name>              where a name is used
                   impls   <type> [method]     types implementing a type, or methods implementing its method
 
-                <project> is a directory holding a pom.xml, or the pom.xml itself. Names are matched exactly and
-                without resolution, so usages over-approximate: everything real is found, and some extras with it.
+                <project> is a directory holding a pom.xml, or the pom.xml itself.
+
+                Names are matched permissively -- case-insensitively, by prefix, by substring, by camel humps
+                (MPR finds MavenProjectReader) and finally as a subsequence -- because whoever is asking may only
+                half-remember the name. `names' shows every tier, best fit first. `usages' and `impls' take only
+                the best tier there is, so an exact name still answers exactly.
+
+                Matching is by name and without resolution, so usages over-approximate: everything real is found,
+                and some extras with it.
                 """);
     }
 }
