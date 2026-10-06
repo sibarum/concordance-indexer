@@ -10,6 +10,7 @@ import com.github.javaparser.ast.nodeTypes.NodeWithSimpleName;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import sibarum.concordance.project.MavenProject;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -28,9 +29,17 @@ import java.util.Optional;
  */
 public final class IndexBuilder {
 
+    /**
+     * What this builder extracts, as a version. Bump it whenever {@link #collect} would record anything
+     * differently — a new reference kind, a changed qualified-name scheme, a JavaParser upgrade that parses
+     * something differently — because an index saved by an older builder is then not one this builder would
+     * produce, and {@link ProjectIndex#load} must refuse it rather than mix the two.
+     */
+    public static final int VERSION = 1;
+
     private IndexBuilder() {}
 
-    private static JavaParser parser() {
+    static JavaParser parser() {
         return new JavaParser(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.RAW));
     }
@@ -57,6 +66,16 @@ public final class IndexBuilder {
         parser().parse(source).getResult()
                 .ifPresent(cu -> collect(cu, attributedTo, symbols, references));
         return new Index(symbols, references);
+    }
+
+    /**
+     * Indexes one file's bytes, decoded as {@link #buildFiles} decodes the file itself — so a file indexed from
+     * the bytes already read to hash it is indistinguishable from one indexed from disk.
+     */
+    static void collectBytes(JavaParser parser, Path file, byte[] source,
+                             List<Symbol> symbols, List<Reference> references) {
+        parser.parse(new ByteArrayInputStream(source)).getResult()
+                .ifPresent(cu -> collect(cu, file, symbols, references));
     }
 
     // ------------------------------------------------------------------------------------------
