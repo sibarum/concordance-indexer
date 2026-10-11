@@ -119,6 +119,26 @@ class ConcordanceTest {
     }
 
     @Test
+    void searchPrintsStageByStageOpenFilesFirst(@TempDir Path dir, @TempDir Path repo) throws IOException {
+        Path jar = repo.resolve("shapes-sources.jar");
+        try (var zip = new java.util.zip.ZipOutputStream(Files.newOutputStream(jar))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("lib/Polygon.java"));
+            zip.write("package lib; public class Polygon { public double area() { return 0; } }"
+                    .getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        Path shape = project(dir).resolve("src/main/java/demo/Shape.java");
+        Run result = run(dir, "search", "area", "--sources", jar.toString(), "--recent", shape.toString());
+        assertEquals(0, result.code(), result.err());
+        int open = result.out().indexOf("== open (1 sources)");
+        int libraries = result.out().indexOf("== direct libraries (1 sources)");
+        assertTrue(open >= 0 && libraries > open, result.out());
+        assertTrue(result.out().indexOf("Polygon.java") > libraries, result.out());
+        assertFalse(result.out().contains("== project"), "an empty stage is left out: " + result.out());
+        assertTrue(result.out().contains("-- 4 declarations whose name answers area, in 2 stages"), result.out());
+    }
+
+    @Test
     void depsListsTheLibrariesAndSaysWhereFrom(@TempDir Path dir) throws IOException {
         Run result = run(project(dir), "deps");
         assertEquals(0, result.code(), result.err());

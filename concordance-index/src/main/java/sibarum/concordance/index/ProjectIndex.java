@@ -134,6 +134,7 @@ public final class ProjectIndex {
     private Map<Path, Entry> entries;
     private Map<Path, Archive> archives;
     private Index index;
+    private Corpus corpus;
 
     ProjectIndex(Path root, Map<Path, Entry> entries, Map<Path, Archive> archives) {
         this.root = normalize(root);
@@ -202,6 +203,12 @@ public final class ProjectIndex {
         return index;
     }
 
+    /** The index cut up by source for a staged {@link Search}; kept until the index changes. */
+    public Corpus corpus() {
+        if (corpus == null) corpus = Corpus.of(index());
+        return corpus;
+    }
+
     /** Brings the index up to date with every main source file of {@code project}, as it is on disk now. */
     public Changes synchronize(MavenProject project) throws IOException {
         return synchronize(project.javaFiles());
@@ -247,6 +254,7 @@ public final class ProjectIndex {
         archives = nextArchives;
         if (!sync.added.isEmpty() || !sync.changed.isEmpty() || !removed.isEmpty() || reordered) {
             index = null;
+            corpus = null;
         }
         return new Changes(sync.added, sync.changed, removed, sync.unchanged);
     }

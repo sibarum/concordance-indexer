@@ -77,21 +77,25 @@ public record Index(List<Symbol> symbols, List<Reference> references) {
      * includes {@code extends} and {@code implements}. The declaration itself is not a use of itself.
      */
     public List<Reference> usagesOf(Symbol symbol) {
-        List<Reference> matches = switch (symbol.kind()) {
-            case METHOD, CONSTRUCTOR -> {
-                int arity = arityOf(symbol.qualified());
-                yield references.stream()
-                        .filter(r -> r.kind() == Reference.Kind.CALL || r.kind() == Reference.Kind.CONSTRUCT)
-                        .filter(r -> r.name().equals(symbol.name()))
-                        .filter(r -> arity < 0 || r.target().equals(Reference.callTarget(symbol.name(), arity)))
-                        .toList();
-            }
-            default -> references.stream().filter(r -> r.name().equals(symbol.name())).toList();
-        };
-        return matches.stream()
-                .filter(r -> !isTheDeclarationItself(r, symbol))
+        int arity = arityOf(symbol.qualified());
+        return references.stream()
+                .filter(r -> isUseOf(r, symbol, arity))
                 .sorted(Comparator.comparing(Reference::at, BY_POSITION))
                 .toList();
+    }
+
+    /** Whether {@code reference} is a use of {@code symbol}, by the rules of {@link #usagesOf(Symbol)}. */
+    static boolean isUseOf(Reference reference, Symbol symbol) {
+        return isUseOf(reference, symbol, arityOf(symbol.qualified()));
+    }
+
+    private static boolean isUseOf(Reference r, Symbol symbol, int arity) {
+        if (!r.name().equals(symbol.name()) || isTheDeclarationItself(r, symbol)) return false;
+        return switch (symbol.kind()) {
+            case METHOD, CONSTRUCTOR -> (r.kind() == Reference.Kind.CALL || r.kind() == Reference.Kind.CONSTRUCT)
+                    && (arity < 0 || r.target().equals(Reference.callTarget(symbol.name(), arity)));
+            default -> true;
+        };
     }
 
     private static boolean isTheDeclarationItself(Reference reference, Symbol symbol) {

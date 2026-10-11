@@ -1,8 +1,13 @@
 package sibarum.concordance.cli;
 
+import sibarum.concordance.index.Hit;
 import sibarum.concordance.index.Index;
+import sibarum.concordance.index.Plan;
 import sibarum.concordance.index.ProjectIndex;
+import sibarum.concordance.index.Query;
 import sibarum.concordance.index.Reference;
+import sibarum.concordance.index.Search;
+import sibarum.concordance.index.Source;
 import sibarum.concordance.index.Symbol;
 import sibarum.concordance.project.Classpath;
 import sibarum.concordance.project.Dependency;
@@ -15,6 +20,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -26,6 +32,7 @@ import java.util.List;
  * concordance <project> impls <type> [method]
  * concordance <project> summary
  * concordance <project> deps
+ * concordance <project> search <fragment> [--recent <file> ...]
  * concordance <project> <query> [args] [--libraries] [--sources <jar> ...]
  * }</pre>
  *
@@ -46,11 +53,15 @@ public final class Concordance {
         // Flags may appear anywhere after the project; everything else is positional.
         List<String> positional = new ArrayList<>();
         List<Path> jars = new ArrayList<>();
+        List<Path> recent = new ArrayList<>();
         boolean libraries = false;
         for (int i = 0; i < given.length; i++) {
             if (given[i].equals("--sources")) {
                 if (++i == given.length) return missing(err, "--sources", "<jar>");
                 jars.add(Path.of(given[i]));
+            } else if (given[i].equals("--recent")) {
+                if (++i == given.length) return missing(err, "--recent", "<file>");
+                recent.add(Path.of(given[i]));
             } else if (given[i].equals("--libraries")) {
                 libraries = true;
             } else {
@@ -66,6 +77,8 @@ public final class Concordance {
         String command = args[1];
 
         Index index;
+        ProjectIndex built;
+        Classpath classpath = null;
         MavenProject project;
         long started = System.nanoTime();
         try {
@@ -74,11 +87,11 @@ public final class Concordance {
                 return deps(project, out);
             }
             if (libraries) {
-                Classpath classpath = DependencyResolver.resolve(project, LocalRepository.locate());
+                classpath = DependencyResolver.resolve(project, LocalRepository.locate());
                 jars.addAll(classpath.sourcesJars());
                 classpath.problems().forEach(p -> err.println("! " + p));
             }
-            ProjectIndex built = ProjectIndex.empty(project.rootDir());
+            built = ProjectIndex.empty(project.rootDir());
             built.synchronize(project.javaFiles(), jars);
             index = built.index();
         } catch (IOException e) {
@@ -122,6 +135,11 @@ public final class Concordance {
                         ? "implementations of " + args[2] + "." + args[3]
                         : "types implementing or extending " + args[2], millis);
             }
+            case "search" -> {
+                if (args.length < 3) return missing(err, "search", "<fragment>");
+                return search(built, Plan.of(recent.stream().map(Source::of).toList(), classpath), args[2],
+                        millis, out, err);
+            }
             default -> {
                 err.println("no such query: " + command);
                 usage(err);
@@ -129,6 +147,54 @@ public final class Concordance {
             }
         }
         return 0;
+    }
+
+    /**
+     * Declarations whose name answers {@code fragment}, stage by stage as a {@link Search} finds them: what an
+     * editor's "go to symbol" box shows while it fills in. Each stage prints as it completes, best fit first.
+     */
+    private static int search(ProjectIndex built, Plan plan, String fragment, long millis, PrintStream out,
+                              PrintStream err) {
+        long started = System.nanoTime();
+        Search<Symbol> search = Search.start(built.corpus(), plan, Query.names(fragment), new Search.Listener<>() {
+            final List<Hit<Symbol>> stageHits = new ArrayList<>();
+
+            @Override
+            public void stage(Plan.Stage stage) {
+                printStage();
+                out.println("== " + stage);
+            }
+
+            @Override
+            public void hits(Plan.Stage stage, List<Hit<Symbol>> hits) {
+                stageHits.addAll(hits);
+            }
+
+            @Override
+            public void ended(Search.State state) {
+                printStage();
+            }
+
+            private void printStage() {
+                stageHits.stream()
+                        .sorted(Comparator.comparingInt((Hit<Symbol> h) -> h.rank()).thenComparing(h -> h.item().name()))
+                        .forEach(h -> out.println(line(h.item())));
+                stageHits.clear();
+            }
+        });
+        try {
+            List<Hit<Symbol>> hits = search.done().get();
+            long searched = (System.nanoTime() - started) / 1_000_000;
+            out.println("-- " + hits.size() + " declarations whose name answers " + fragment + ", in "
+                    + search.stages().size() + " stages (indexed in " + millis + " ms, searched in " + searched + " ms)");
+            return 0;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 1;
+        } catch (java.util.concurrent.ExecutionException e) {
+            err.println("search failed: " + e.getCause());
+            return 1;
+        }
     }
 
     /** The libraries the project's main source can name, nearest first, and what could not be resolved. */
@@ -177,9 +243,13 @@ public final class Concordance {
                   names   <fragment>          declarations whose name answers a fragment, best fit first
                   usages  <name>              where a name is used
                   impls   <type> [method]     types implementing a type, or methods implementing its method
+                  search  <fragment>          like names, but staged as an editor searches: open files
+                                              (--recent), the project, direct libraries, then the rest
                   deps                        the libraries main source can name, nearest first, from the
                                               local repository, and what could not be resolved
 
+                  --recent <file>             a file open in the editor, searched first; repeatable,
+                                              most recent first
                   --libraries                 also index the sources jars of every resolved library
                   --sources <jar>             also index a library's sources jar; repeatable. A library
                                               contributes what it exports -- public and protected types
