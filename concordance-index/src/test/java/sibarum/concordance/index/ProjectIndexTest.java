@@ -204,7 +204,7 @@ class ProjectIndexTest {
 
         assertTrue(moved.files().stream().allMatch(f -> f.startsWith(after.toAbsolutePath().normalize())),
                 moved.files().toString());
-        assertTrue(moved.index().symbols().stream().allMatch(s -> s.file().startsWith(after.toAbsolutePath())));
+        assertTrue(moved.index().symbols().stream().allMatch(s -> ((Source.OnDisk) s.source()).file().startsWith(after.toAbsolutePath())));
         assertTrue(moved.synchronize(sources(after)).isEmpty(),
                 "the files are the same files; only the directory around them moved");
     }
@@ -287,10 +287,10 @@ class ProjectIndexTest {
         String shapes = Stream.of(Symbol.class, Reference.class, SourceRef.class)
                 .map(ProjectIndexTest::shape)
                 .collect(Collectors.joining("; "));
-        assertEquals(1, IndexCodec.FORMAT, "FORMAT moved; update the shapes below to match it");
+        assertEquals(2, IndexCodec.FORMAT, "FORMAT moved; update the shapes below to match it");
         assertEquals("Symbol(Kind kind, String name, String owner, String qualified, SourceRef at, List supers); "
                         + "Reference(Kind kind, String target, String name, String from, SourceRef at); "
-                        + "SourceRef(Path file, int line, int column)",
+                        + "SourceRef(Source source, int line, int column)",
                 shapes,
                 "a record the index format writes has changed shape: bump IndexCodec.FORMAT so saved indexes are "
                         + "refused, write the new component in IndexCodec, and update this expectation");

@@ -1,7 +1,7 @@
 package sibarum.concordance.cli;
 
 import sibarum.concordance.index.Index;
-import sibarum.concordance.index.IndexBuilder;
+import sibarum.concordance.index.ProjectIndex;
 import sibarum.concordance.index.Reference;
 import sibarum.concordance.index.Symbol;
 import sibarum.concordance.project.MavenProject;
@@ -10,6 +10,7 @@ import sibarum.concordance.project.MavenProjectReader;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -20,6 +21,7 @@ import java.util.List;
  * concordance <project> usages <name>
  * concordance <project> impls <type> [method]
  * concordance <project> summary
+ * concordance <project> <query> [args] --sources <jar> ...
  * }</pre>
  *
  * <p>Output is one result per line, {@code path:line} first, so it pipes into anything that opens files —
@@ -35,7 +37,19 @@ public final class Concordance {
     }
 
     /** Separated from {@link #main} so a test can drive it without exiting the JVM. */
-    public static int run(String[] args, PrintStream out, PrintStream err) {
+    public static int run(String[] given, PrintStream out, PrintStream err) {
+        // --sources may appear anywhere after the project; everything else is positional.
+        List<String> positional = new ArrayList<>();
+        List<Path> jars = new ArrayList<>();
+        for (int i = 0; i < given.length; i++) {
+            if (given[i].equals("--sources")) {
+                if (++i == given.length) return missing(err, "--sources", "<jar>");
+                jars.add(Path.of(given[i]));
+            } else {
+                positional.add(given[i]);
+            }
+        }
+        String[] args = positional.toArray(String[]::new);
         if (args.length < 2) {
             usage(err);
             return 2;
@@ -48,7 +62,9 @@ public final class Concordance {
         long started = System.nanoTime();
         try {
             project = MavenProjectReader.read(root);
-            index = IndexBuilder.build(project);
+            ProjectIndex built = ProjectIndex.empty(project.rootDir());
+            built.synchronize(project.javaFiles(), jars);
+            index = built.index();
         } catch (IOException e) {
             err.println("cannot index " + root + ": " + e.getMessage());
             return 1;
@@ -64,8 +80,8 @@ public final class Concordance {
                     files = -1;
                 }
                 out.println(root + ": " + index.summary());
-                out.println("  " + project.modules().size() + " modules, " + files
-                        + " files, indexed in " + millis + " ms");
+                out.println("  " + project.modules().size() + " modules, " + files + " files, "
+                        + jars.size() + " sources jars, indexed in " + millis + " ms");
             }
             case "names" -> {
                 if (args.length < 3) return missing(err, "names", "<fragment>");
@@ -77,7 +93,7 @@ public final class Concordance {
                 if (args.length < 3) return missing(err, "usages", "<name>");
                 List<Reference> uses = index.usagesOf(args[2]);
                 uses.forEach(r -> out.printf("%s:%d  %-10s in %s%n",
-                        r.at().file(), r.at().line(), r.kind(), r.from()));
+                        r.at().source(), r.at().line(), r.kind(), r.from()));
                 note(out, uses.size(), "uses of " + args[2], millis);
             }
             case "impls" -> {
@@ -100,7 +116,7 @@ public final class Concordance {
     }
 
     private static String line(Symbol symbol) {
-        return symbol.at().file() + ":" + symbol.at().line()
+        return symbol.at()
                 + "  " + pad(symbol.kind().name(), 10)
                 + " " + pad(symbol.name(), 28)
                 + " " + symbol.owner();
@@ -127,6 +143,10 @@ public final class Concordance {
                   names   <fragment>          declarations whose name answers a fragment, best fit first
                   usages  <name>              where a name is used
                   impls   <type> [method]     types implementing a type, or methods implementing its method
+
+                  --sources <jar>             also index a library's sources jar; repeatable. A library
+                                              contributes what it exports -- public and protected types
+                                              and members -- and no references.
 
                 <project> is a directory holding a pom.xml, or the pom.xml itself.
 

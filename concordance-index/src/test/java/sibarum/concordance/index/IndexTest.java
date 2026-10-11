@@ -76,7 +76,7 @@ class IndexTest {
     @Test
     void everyResultHasSomewhereACaretCanGo() {
         for (Symbol symbol : shapes().namesContaining("a")) {
-            assertEquals(FAKE, symbol.at().file());
+            assertEquals(new Source.OnDisk(FAKE), symbol.at().source());
             assertTrue(symbol.at().line() > 0, symbol + " has no line");
         }
     }

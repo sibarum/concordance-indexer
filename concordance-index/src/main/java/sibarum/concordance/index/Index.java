@@ -24,7 +24,7 @@ import java.util.Set;
 public record Index(List<Symbol> symbols, List<Reference> references) {
 
     private static final Comparator<SourceRef> BY_POSITION =
-            Comparator.comparing((SourceRef r) -> r.file().toString())
+            Comparator.comparing((SourceRef r) -> r.source().toString())
                     .thenComparingInt(SourceRef::line)
                     .thenComparingInt(SourceRef::column);
 
@@ -95,7 +95,7 @@ public record Index(List<Symbol> symbols, List<Reference> references) {
     }
 
     private static boolean isTheDeclarationItself(Reference reference, Symbol symbol) {
-        return reference.at().file().equals(symbol.at().file())
+        return reference.at().source().equals(symbol.at().source())
                 && reference.at().line() == symbol.at().line();
     }
 
@@ -186,8 +186,13 @@ public record Index(List<Symbol> symbols, List<Reference> references) {
 
     /** Declarations in one file, in source order — what an outline view wants. */
     public List<Symbol> declaredIn(Path file) {
+        return declaredIn(Source.of(file));
+    }
+
+    /** Declarations in one source, file or archive entry, in source order. */
+    public List<Symbol> declaredIn(Source source) {
         return symbols.stream()
-                .filter(s -> s.at().file().equals(file))
+                .filter(s -> s.at().source().equals(source))
                 .sorted(Comparator.comparing(Symbol::at, BY_POSITION))
                 .toList();
     }

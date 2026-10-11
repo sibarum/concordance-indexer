@@ -104,6 +104,28 @@ class ConcordanceTest {
     }
 
     @Test
+    void aSourcesJarAnswersAlongsideTheProject(@TempDir Path dir, @TempDir Path repo) throws IOException {
+        Path jar = repo.resolve("shapes-sources.jar");
+        try (var zip = new java.util.zip.ZipOutputStream(Files.newOutputStream(jar))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("lib/Polygon.java"));
+            zip.write("package lib; public class Polygon { public double area() { return 0; } }"
+                    .getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        Run result = run(project(dir), "names", "area", "--sources", jar.toString());
+        assertEquals(0, result.code(), result.err());
+        assertTrue(result.out().contains(jar.toAbsolutePath() + "!/lib/Polygon.java:1"), result.out());
+        assertTrue(result.out().contains("Shape.java"), "the project still answers: " + result.out());
+    }
+
+    @Test
+    void aSourcesFlagWithoutAJarSaysSo(@TempDir Path dir) throws IOException {
+        Run result = run(project(dir), "summary", "--sources");
+        assertEquals(2, result.code());
+        assertTrue(result.err().contains("<jar>"), result.err());
+    }
+
+    @Test
     void aDirectoryWithNoPomFailsCleanly(@TempDir Path dir) {
         Run result = run(dir, "summary");
         assertEquals(1, result.code());

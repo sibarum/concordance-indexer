@@ -1,6 +1,5 @@
 package sibarum.concordance.index;
 
-import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -10,7 +9,7 @@ import java.util.List;
  * @param name      the simple name, as written
  * @param owner     the fully-qualified type it is declared in; for a type, its own enclosing type or the package
  * @param qualified the fully-qualified name — {@code a.b.C}, or {@code a.b.C#m(int)} for a member
- * @param at        the file and line it is declared on
+ * @param at        the source and line it is declared on
  * @param supers    for a type, the names of the types it extends and implements, as written
  */
 public record Symbol(
@@ -38,8 +37,8 @@ public record Symbol(
         supers = supers == null ? List.of() : List.copyOf(supers);
     }
 
-    public Path file() {
-        return at.file();
+    public Source source() {
+        return at.source();
     }
 
     public int line() {
