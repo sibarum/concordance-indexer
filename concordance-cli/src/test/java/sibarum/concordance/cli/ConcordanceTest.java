@@ -135,7 +135,10 @@ class ConcordanceTest {
         assertTrue(open >= 0 && libraries > open, result.out());
         assertTrue(result.out().indexOf("Polygon.java") > libraries, result.out());
         assertFalse(result.out().contains("== project"), "an empty stage is left out: " + result.out());
-        assertTrue(result.out().contains("-- 4 declarations whose name answers area, in 2 stages"), result.out());
+        assertTrue(result.out().contains("area  (3: 3 METHOD)"), "one name, its declarations under it: " + result.out());
+        assertTrue(result.out().indexOf("area  (+1 of 4: 1 METHOD)") > libraries,
+                "the group grows in a later stage, which shows only what it added: " + result.out());
+        assertTrue(result.out().contains("-- 1 names (4 declarations) answering area, in 2 stages"), result.out());
     }
 
     @Test

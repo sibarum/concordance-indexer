@@ -2,6 +2,8 @@ package sibarum.concordance.cli;
 
 import sibarum.concordance.index.Hit;
 import sibarum.concordance.index.Index;
+import sibarum.concordance.index.NameGroup;
+import sibarum.concordance.index.NameGroups;
 import sibarum.concordance.index.Plan;
 import sibarum.concordance.index.ProjectIndex;
 import sibarum.concordance.index.Query;
@@ -21,7 +23,10 @@ import java.io.PrintStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Concordance from a terminal.
@@ -115,8 +120,10 @@ public final class Concordance {
             case "names" -> {
                 if (args.length < 3) return missing(err, "names", "<fragment>");
                 List<Symbol> hits = index.namesContaining(args[2]);
-                hits.forEach(s -> out.println(line(s)));
-                note(out, hits.size(), "declarations whose name answers " + args[2], millis);
+                Map<String, List<Symbol>> byName = new LinkedHashMap<>();
+                hits.forEach(s -> byName.computeIfAbsent(s.name(), k -> new ArrayList<>()).add(s));
+                byName.forEach((name, declared) -> printGroup(out, name, declared, declared.size()));
+                note(out, byName.size(), "names (" + hits.size() + " declarations) answering " + args[2], millis);
             }
             case "usages" -> {
                 if (args.length < 3) return missing(err, "usages", "<name>");
@@ -156,8 +163,9 @@ public final class Concordance {
     private static int search(ProjectIndex built, Plan plan, String fragment, long millis, PrintStream out,
                               PrintStream err) {
         long started = System.nanoTime();
-        Search<Symbol> search = Search.start(built.corpus(), plan, Query.names(fragment), new Search.Listener<>() {
-            final List<Hit<Symbol>> stageHits = new ArrayList<>();
+        NameGroups groups = new NameGroups(new NameGroups.Listener() {
+            final Map<String, NameGroup> changedHere = new LinkedHashMap<>();
+            final Map<String, Integer> shownBefore = new HashMap<>();
 
             @Override
             public void stage(Plan.Stage stage) {
@@ -166,8 +174,8 @@ public final class Concordance {
             }
 
             @Override
-            public void hits(Plan.Stage stage, List<Hit<Symbol>> hits) {
-                stageHits.addAll(hits);
+            public void changed(Plan.Stage stage, List<NameGroup> changed) {
+                changed.forEach(g -> changedHere.put(g.name(), g));
             }
 
             @Override
@@ -175,17 +183,24 @@ public final class Concordance {
                 printStage();
             }
 
+            /** Each group this stage made or grew, best fit first, showing only what the stage added. */
             private void printStage() {
-                stageHits.stream()
-                        .sorted(Comparator.comparingInt((Hit<Symbol> h) -> h.rank()).thenComparing(h -> h.item().name()))
-                        .forEach(h -> out.println(line(h.item())));
-                stageHits.clear();
+                changedHere.values().stream()
+                        .sorted(Comparator.comparingInt(NameGroup::rank).thenComparing(NameGroup::name))
+                        .forEach(g -> {
+                            int before = shownBefore.getOrDefault(g.name(), 0);
+                            List<Symbol> added = g.symbols().subList(before, g.symbols().size());
+                            printGroup(out, g.name(), added, g.declarations().size());
+                            shownBefore.put(g.name(), g.declarations().size());
+                        });
+                changedHere.clear();
             }
         });
+        Search<Symbol> search = Search.start(built.corpus(), plan, Query.names(fragment), groups);
         try {
             List<Hit<Symbol>> hits = search.done().get();
             long searched = (System.nanoTime() - started) / 1_000_000;
-            out.println("-- " + hits.size() + " declarations whose name answers " + fragment + ", in "
+            out.println("-- " + groups.groups().size() + " names (" + hits.size() + " declarations) answering " + fragment + ", in "
                     + search.stages().size() + " stages (indexed in " + millis + " ms, searched in " + searched + " ms)");
             return 0;
         } catch (InterruptedException e) {
@@ -213,6 +228,25 @@ public final class Concordance {
                 + " with sources, " + classpath.problems().size() + " problems, from " + repository
                 + " (resolved in " + millis + " ms)");
         return 0;
+    }
+
+    /**
+     * One name: on one line when it has one declaration, otherwise a header and a line per declaration — the
+     * choice an editor offers when an overloaded name is picked. {@code total} counts declarations already shown
+     * under an earlier stage too, so a group that grew says so.
+     */
+    private static void printGroup(PrintStream out, String name, List<Symbol> shown, int total) {
+        if (total == 1) {
+            out.println(line(shown.getFirst()));
+            return;
+        }
+        Map<Symbol.Kind, Long> kinds = new java.util.TreeMap<>();
+        shown.forEach(s -> kinds.merge(s.kind(), 1L, Long::sum));
+        String counted = kinds.entrySet().stream().map(e -> e.getValue() + " " + e.getKey())
+                .collect(java.util.stream.Collectors.joining(", "));
+        out.println(name + "  (" + (shown.size() == total ? total + ": " : "+" + shown.size() + " of " + total + ": ")
+                + counted + ")");
+        shown.forEach(s -> out.println("    " + s.at() + "  " + pad(s.kind().name(), 13) + " " + s.qualified()));
     }
 
     private static String line(Symbol symbol) {

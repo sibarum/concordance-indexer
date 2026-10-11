@@ -222,6 +222,47 @@ class SearchTest {
         assertEquals(List.of(Source.of(app)), List.copyOf(live.corpus().sources()));
     }
 
+    // --- one answer per name -------------------------------------------------------------------
+
+    @Test
+    void aNameIsOneGroupThatGrowsAsLaterStagesFindMore() throws Exception {
+        List<String> changes = Collections.synchronizedList(new ArrayList<>());
+        NameGroups groups = new NameGroups(new NameGroups.Listener() {
+            @Override public void changed(Plan.Stage stage, List<NameGroup> changed) {
+                changed.forEach(g -> changes.add(stage.name() + ": " + g.name() + " x" + g.declarations().size()));
+            }
+        });
+        List<Hit<Symbol>> hits = Search.start(corpus().corpus(), plan(), Query.names("draw"), groups,
+                INLINE, Duration.ZERO).done().get();
+
+        assertEquals(List.of("project: draw x1", "linked libraries: draw x2",
+                "other libraries: Drawable x1", "other libraries: draw x3"), changes);
+        List<NameGroup> all = groups.groups();
+        assertEquals(List.of("draw", "Drawable"), all.stream().map(NameGroup::name).toList());
+        assertTrue(all.getFirst().ambiguous());
+        assertEquals(List.of("app.Circle#draw()", "lib.figures.Figure#draw()", "lib.drawing.Drawable#draw()"),
+                all.getFirst().symbols().stream().map(Symbol::qualified).toList(), "nearest first");
+        assertEquals(Plan.PROJECT, all.getFirst().nearest().name());
+        assertEquals(all, NameGroup.of(hits), "grouping as hits arrive and grouping at the end agree");
+    }
+
+    @Test
+    void aTypeAndItsConstructorsAreOneNameToChooseAmong() throws Exception {
+        Index index = IndexBuilder.buildSource(Path.of("Vec.java"), """
+                package m;
+                public class Vec { public Vec() {} public Vec(float x) {} public Vec(Vec other) {} }
+                """);
+        List<Hit<Symbol>> hits = Search.start(Corpus.of(index), Plan.everything(), Query.names("Vec"),
+                new Log<>(), INLINE, Duration.ZERO).done().get();
+        List<NameGroup> groups = NameGroup.of(hits);
+        assertEquals(1, groups.size());
+        assertEquals(List.of(Symbol.Kind.CLASS, Symbol.Kind.CONSTRUCTOR, Symbol.Kind.CONSTRUCTOR,
+                Symbol.Kind.CONSTRUCTOR), groups.getFirst().symbols().stream().map(Symbol::kind).toList());
+        assertEquals(List.of("m.Vec", "m.Vec#<init>()", "m.Vec#<init>(float)", "m.Vec#<init>(Vec)"),
+                groups.getFirst().symbols().stream().map(Symbol::qualified).toList(),
+                "what tells them apart when the name is chosen");
+    }
+
     // --- pausing, cancelling, failing ----------------------------------------------------------
 
     /** A search whose thread starts only once the test holds the search, so a listener can steer it. */
