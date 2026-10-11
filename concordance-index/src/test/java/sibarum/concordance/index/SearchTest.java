@@ -113,9 +113,9 @@ class SearchTest {
     @Test
     void openFilesThenTheProjectThenDirectLibrariesThenTheRest() throws IOException {
         Corpus corpus = corpus().corpus();
-        List<Plan.Stage> stages = plan(circle).stages(corpus.sources());
+        List<Plan.Stage> stages = plan(circle).stages(corpus);
 
-        assertEquals(List.of(Plan.OPEN, Plan.PROJECT, Plan.DIRECT_LIBRARIES, Plan.OTHER_LIBRARIES),
+        assertEquals(List.of(Plan.OPEN, Plan.PROJECT, Plan.LINKED_LIBRARIES, Plan.OTHER_LIBRARIES),
                 stages.stream().map(Plan.Stage::name).toList());
         assertEquals(List.of(Source.of(circle)), stages.get(0).sources());
         assertEquals(List.of(Source.of(app), Source.of(canvas)), stages.get(1).sources(),
@@ -125,11 +125,38 @@ class SearchTest {
     }
 
     @Test
-    void anEmptyStageIsLeftOutAndAnUnknownJarCountsAsDirect() throws IOException {
+    void anEmptyStageIsLeftOutAndALibraryNothingLinksToComesLast() throws IOException {
         Corpus corpus = corpus().corpus();
-        List<Plan.Stage> stages = Plan.everything().stages(corpus.sources());
-        assertEquals(List.of(Plan.PROJECT, Plan.DIRECT_LIBRARIES), stages.stream().map(Plan.Stage::name).toList());
-        assertEquals(2, stages.get(1).sources().size());
+        List<Plan.Stage> stages = Plan.everything().stages(corpus);
+        assertEquals(List.of(Plan.PROJECT, Plan.LINKED_LIBRARIES, Plan.OTHER_LIBRARIES),
+                stages.stream().map(Plan.Stage::name).toList(),
+                "with no classpath both jars count as depth 1; only linking separates them");
+        assertEquals(List.of(new Source.InArchive(deep, "lib/drawing/Drawable.java")), stages.get(2).sources());
+    }
+
+    @Test
+    void adjacencyNotDepthDecidesWhichLibrariesAreLinked() throws IOException {
+        ProjectIndex live = corpus();
+        Path easel = java(dir.resolve("src/app/Easel.java"),
+                "package app; import lib.drawing.*; class Easel implements Drawable { public void draw() {} }");
+        live.synchronize(List.of(app, canvas, circle, easel), List.of(deep, direct));
+
+        List<Plan.Stage> stages = plan(easel).stages(live.corpus());
+        assertEquals(List.of(Plan.OPEN, Plan.PROJECT, Plan.LINKED_LIBRARIES),
+                stages.stream().map(Plan.Stage::name).toList());
+        assertEquals(List.of(new Source.InArchive(deep, "lib/drawing/Drawable.java"),
+                        new Source.InArchive(direct, "lib/figures/Figure.java")), stages.get(2).sources(),
+                "the depth-2 library the open file imports comes before the declared one only Circle names");
+    }
+
+    @Test
+    void aSimpleNameLinksOnlyThroughAnImport() throws IOException {
+        ProjectIndex live = corpus();
+        Path loose = java(dir.resolve("src/app/Loose.java"), "package app; class Loose implements Drawable {}");
+        live.synchronize(List.of(loose), List.of(deep, direct));
+        List<Plan.Stage> stages = Plan.everything().stages(live.corpus());
+        assertEquals(List.of(Plan.PROJECT, Plan.OTHER_LIBRARIES), stages.stream().map(Plan.Stage::name).toList(),
+                "Drawable unimported could be anything in package app; it is not taken to mean lib.drawing");
     }
 
     // --- what it finds --------------------------------------------------------------------------
@@ -140,7 +167,7 @@ class SearchTest {
                 INLINE, Duration.ZERO);
         List<Hit<Symbol>> hits = search.done().get();
 
-        assertEquals(List.of("draw@project", "draw@direct libraries", "Drawable@other libraries",
+        assertEquals(List.of("draw@project", "draw@linked libraries", "Drawable@other libraries",
                 "draw@other libraries"), names(hits));
         assertEquals(List.of(0, 0, 2, 0), hits.stream().map(Hit::rank).toList());
         assertEquals(3, Hit.bestTier(hits).size());
@@ -151,7 +178,7 @@ class SearchTest {
     void implementationsAreFoundThroughLibrariesAndReportedNearestFirst() throws Exception {
         List<Hit<Symbol>> hits = Search.start(corpus().corpus(), plan(), Query.implementationsOf("Drawable"),
                 new Log<>(), INLINE, Duration.ZERO).done().get();
-        assertEquals(List.of("Circle@project", "Figure@direct libraries"), names(hits),
+        assertEquals(List.of("Circle@project", "Figure@linked libraries"), names(hits),
                 "Circle reaches Drawable only through Figure, two stages later; it still comes first");
     }
 
@@ -181,7 +208,7 @@ class SearchTest {
         Log<Reference> log = new Log<>();
         Search.start(corpus().corpus(), plan(), Query.usages("Shape"), log, INLINE, Duration.ofHours(1))
                 .done().get();
-        assertEquals(List.of("stage project", "hits 1", "stage direct libraries", "stage other libraries",
+        assertEquals(List.of("stage project", "hits 1", "stage linked libraries", "stage other libraries",
                 "ended DONE"), log.events, "a long batch interval still hands over at the end of each stage");
     }
 
@@ -236,7 +263,7 @@ class SearchTest {
         search.resume();
         assertEquals(4, search.done().get(5, TimeUnit.SECONDS).size());
         assertEquals(Search.State.DONE, search.state());
-        assertTrue(log.events.contains("paused in " + Plan.DIRECT_LIBRARIES), log.events.toString());
+        assertTrue(log.events.contains("paused in " + Plan.LINKED_LIBRARIES), log.events.toString());
     }
 
     @Test

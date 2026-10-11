@@ -244,7 +244,7 @@ public final class Concordance {
                   usages  <name>              where a name is used
                   impls   <type> [method]     types implementing a type, or methods implementing its method
                   search  <fragment>          like names, but staged as an editor searches: open files
-                                              (--recent), the project, direct libraries, then the rest
+                                              (--recent), the project, libraries it links to, the rest
                   deps                        the libraries main source can name, nearest first, from the
                                               local repository, and what could not be resolved
 

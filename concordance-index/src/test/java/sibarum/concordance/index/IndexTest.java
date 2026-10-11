@@ -271,6 +271,30 @@ class IndexTest {
         assertEquals(1, index.namesContaining("LIGHT").size(), "found by name like any other declaration");
     }
 
+    @Test
+    void importsAreRecordedQualifiedAndAQualifiedTypeKeepsItsQualifier() {
+        Index index = IndexBuilder.buildSource(FAKE, """
+                package demo;
+                import java.util.List;
+                import lib.shapes.*;
+                import static lib.Maths.clamp;
+                class Scene extends lib.base.Stage implements Drawable { List<lib.paint.Color> palette; }
+                """);
+        List<String> imports = index.references().stream()
+                .filter(r -> r.kind() == Reference.Kind.IMPORT)
+                .map(r -> r.target() + " as " + r.name()).toList();
+        assertEquals(List.of("java.util.List as List", "lib.shapes.* as *", "lib.Maths.clamp as clamp"), imports);
+
+        assertEquals(List.of("lib.base.Stage"), targets(index, Reference.Kind.EXTENDS));
+        assertEquals(List.of("Drawable"), targets(index, Reference.Kind.IMPLEMENTS));
+        assertTrue(targets(index, Reference.Kind.TYPE_USE).contains("lib.paint.Color"));
+        assertEquals(2, index.usagesOf("List").size(), "an import of a name is a use of it, as an editor counts");
+    }
+
+    private static List<String> targets(Index index, Reference.Kind kind) {
+        return index.references().stream().filter(r -> r.kind() == kind).map(Reference::target).toList();
+    }
+
     // --- the real thing -----------------------------------------------------------------------
 
     @Test

@@ -131,7 +131,7 @@ class ConcordanceTest {
         Run result = run(dir, "search", "area", "--sources", jar.toString(), "--recent", shape.toString());
         assertEquals(0, result.code(), result.err());
         int open = result.out().indexOf("== open (1 sources)");
-        int libraries = result.out().indexOf("== direct libraries (1 sources)");
+        int libraries = result.out().indexOf("== other libraries (1 sources)");
         assertTrue(open >= 0 && libraries > open, result.out());
         assertTrue(result.out().indexOf("Polygon.java") > libraries, result.out());
         assertFalse(result.out().contains("== project"), "an empty stage is left out: " + result.out());

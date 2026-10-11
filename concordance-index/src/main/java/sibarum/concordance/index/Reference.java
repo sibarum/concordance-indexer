@@ -13,7 +13,8 @@ package sibarum.concordance.index;
  * a qualified form and the extras disappear.
  *
  * @param kind   how the name is being used
- * @param target the name used, plus arity for a call: {@code close/0}
+ * @param target the name used, plus arity for a call ({@code close/0}), and with its qualifier when the
+ *               source wrote one ({@code lib.figures.Figure})
  * @param name   the simple name alone
  * @param from   the qualified name of the declaration this use sits inside
  * @param at     where the use is
@@ -32,7 +33,14 @@ public record Reference(Kind kind, String target, String name, String from, Sour
         /** A supertype named in {@code extends}. */
         EXTENDS,
         /** A supertype named in {@code implements}. */
-        IMPLEMENTS
+        IMPLEMENTS,
+        /**
+         * An {@code import}: the target is what is imported, {@code a.b.C}, {@code a.b.*}, or for a static
+         * import {@code a.b.C.m} or {@code a.b.C.*}; the name is its last segment, {@code *} for a whole package or
+         * type. The one reference whose target is always qualified, which is what lets a search tell which
+         * library a file actually links to.
+         */
+        IMPORT
     }
 
     public Reference {

@@ -12,7 +12,7 @@ import java.util.concurrent.Executor;
  *
  * <p>An index that holds a project's libraries cannot answer "everything named like this" instantly, and should
  * not make anyone wait for the slowest part before showing the fastest. So a search walks its {@link Plan}: the
- * open files, the project, the direct libraries, the rest. It reports hits as it goes, in batches, and the caller
+ * open files, the project, the libraries it links to, the rest. It reports hits as it goes, in batches, and the caller
  * shows them as they arrive. When the question changes — another keystroke — the caller cancels this search and
  * starts the next; when the editor needs the CPU for something else, it pauses it.
  *
@@ -70,7 +70,7 @@ public final class Search<T> {
 
     private Search(Corpus corpus, Plan plan, Query<T> query, Listener<T> listener, Duration batch) {
         this.corpus = corpus;
-        this.stages = plan.stages(corpus.sources());
+        this.stages = plan.stages(corpus);
         this.query = query;
         this.listener = listener;
         this.batchNanos = batch.toNanos();

@@ -4,6 +4,7 @@ import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.AccessSpecifier;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.*;
 import com.github.javaparser.ast.expr.*;
@@ -43,7 +44,7 @@ public final class IndexBuilder {
      * something differently — because an index saved by an older builder is then not one this builder would
      * produce, and {@link ProjectIndex#load} must refuse it rather than mix the two.
      */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     private IndexBuilder() {}
 
@@ -148,11 +149,11 @@ public final class IndexBuilder {
             // extends / implements are references to the named types, and are how implementations are found.
             if (type instanceof ClassOrInterfaceDeclaration decl) {
                 for (ClassOrInterfaceType parent : decl.getExtendedTypes()) {
-                    references.add(new Reference(Reference.Kind.EXTENDS, parent.getNameAsString(),
+                    references.add(new Reference(Reference.Kind.EXTENDS, parent.getNameWithScope(),
                             parent.getNameAsString(), qualified, at(file, parent)));
                 }
                 for (ClassOrInterfaceType parent : decl.getImplementedTypes()) {
-                    references.add(new Reference(Reference.Kind.IMPLEMENTS, parent.getNameAsString(),
+                    references.add(new Reference(Reference.Kind.IMPLEMENTS, parent.getNameWithScope(),
                             parent.getNameAsString(), qualified, at(file, parent)));
                 }
             }
@@ -162,6 +163,12 @@ public final class IndexBuilder {
 
         if (exportsOnly) return;
 
+        // Imports say exactly which type a simple name in this file means; nothing else in a file is qualified.
+        for (ImportDeclaration imported : cu.getImports()) {
+            String target = imported.getNameAsString() + (imported.isAsterisk() ? ".*" : "");
+            String name = imported.isAsterisk() ? "*" : imported.getName().getIdentifier();
+            references.add(new Reference(Reference.Kind.IMPORT, target, name, pkg, at(file, imported)));
+        }
         for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
             references.add(new Reference(Reference.Kind.CALL,
                     Reference.callTarget(call.getNameAsString(), call.getArguments().size()),
@@ -187,7 +194,7 @@ public final class IndexBuilder {
                             || p instanceof ClassOrInterfaceDeclaration)
                     .isPresent();
             if (alreadyRecorded) continue;
-            references.add(new Reference(Reference.Kind.TYPE_USE, used.getNameAsString(),
+            references.add(new Reference(Reference.Kind.TYPE_USE, used.getNameWithScope(),
                     used.getNameAsString(), enclosingDeclaration(used, pkg), at(file, used)));
         }
         for (FieldAccessExpr access : cu.findAll(FieldAccessExpr.class)) {
