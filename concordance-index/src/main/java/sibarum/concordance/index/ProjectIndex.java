@@ -118,9 +118,10 @@ public final class ProjectIndex {
     /**
      * What a {@link #synchronize} found, by file and by jar: a jar is one item here however many entries it
      * holds. A file whose stat changed but whose content did not is unchanged: it was not reparsed, and nothing
-     * in the index moved.
+     * in the index moved. {@code fromCache} counts the added or changed jars that were loaded from the
+     * {@link JarCache} rather than read.
      */
-    public record Changes(List<Path> added, List<Path> changed, List<Path> removed, int unchanged) {
+    public record Changes(List<Path> added, List<Path> changed, List<Path> removed, int unchanged, int fromCache) {
 
         public Changes {
             added = List.copyOf(added);
@@ -136,12 +137,13 @@ public final class ProjectIndex {
         @Override
         public String toString() {
             return added.size() + " added, " + changed.size() + " changed, " + removed.size() + " removed, "
-                    + unchanged + " unchanged";
+                    + unchanged + " unchanged" + (fromCache > 0 ? ", " + fromCache + " jars from the cache" : "");
         }
     }
 
     private final Path root;
     private final Limits limits;
+    private JarCache jarCache;
     private Map<Path, Entry> entries;
     private Map<Path, Archive> archives;
     private Index index;
@@ -199,6 +201,16 @@ public final class ProjectIndex {
 
     public Path root() {
         return root;
+    }
+
+    /**
+     * Shares what each jar contributes with every other index on this machine that uses the same {@code cache}:
+     * from the next synchronize on, a jar is loaded from the cache when it is there and stored in it when it is
+     * not. Null stops using one. See {@link JarCache}.
+     */
+    public ProjectIndex useJarCache(JarCache cache) {
+        this.jarCache = cache;
+        return this;
     }
 
     /** The files this index holds, in index order. */
@@ -282,7 +294,7 @@ public final class ProjectIndex {
             throws IOException {
         Map<Path, Entry> nextEntries = new LinkedHashMap<>();
         Map<Path, Archive> nextArchives = new LinkedHashMap<>();
-        Sync sync = new Sync(System.currentTimeMillis(), limits);
+        Sync sync = new Sync(System.currentTimeMillis(), limits, jarCache);
         try (sync) {
             for (Path given : files) {
                 Path file = normalize(given);
@@ -315,7 +327,7 @@ public final class ProjectIndex {
             index = null;
             corpus = null;
         }
-        return new Changes(sync.added, sync.changed, removed, sync.unchanged);
+        return new Changes(sync.added, sync.changed, removed, sync.unchanged, sync.fromCache);
     }
 
     /**
@@ -328,9 +340,12 @@ public final class ProjectIndex {
         final List<Path> added = new ArrayList<>();
         final List<Path> changed = new ArrayList<>();
         int unchanged;
+        int fromCache;
+        final JarCache jarCache;
         private ParseWorker worker;
 
-        Sync(long startedAt, Limits limits) {
+        Sync(long startedAt, Limits limits, JarCache jarCache) {
+            this.jarCache = jarCache;
             this.startedAt = startedAt;
             this.limits = limits;
         }
@@ -390,6 +405,14 @@ public final class ProjectIndex {
                 case Read.TooLarge t -> throw new IllegalStateException("a jar is hashed as a stream, never held");
                 case Read.Fresh(byte[] unread, long modified, byte[] digest) -> {
                     (old == null ? added : changed).add(jar);
+                    if (jarCache != null) {
+                        var cached = jarCache.load(digest, compiled, jar, limits);
+                        if (cached.isPresent()) {
+                            fromCache++;
+                            return new Archive(jar, Files.size(jar), modified, digest, cached.get().entries(),
+                                    cached.get().problems(), compiled);
+                        }
+                    }
                     List<String> problems = new ArrayList<>();
                     List<Entry> entries;
                     try {
@@ -399,7 +422,9 @@ public final class ProjectIndex {
                         problems.add("not a readable zip: " + unreadable.getMessage());
                         entries = List.of();
                     }
-                    return new Archive(jar, Files.size(jar), modified, digest, entries, problems, compiled);
+                    Archive fresh = new Archive(jar, Files.size(jar), modified, digest, entries, problems, compiled);
+                    if (jarCache != null) jarCache.store(fresh, limits);
+                    return fresh;
                 }
             }
         }

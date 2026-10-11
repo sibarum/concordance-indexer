@@ -112,7 +112,7 @@ class ConcordanceTest {
                     .getBytes(StandardCharsets.UTF_8));
             zip.closeEntry();
         }
-        Run result = run(project(dir), "names", "area", "--sources", jar.toString());
+        Run result = run(project(dir), "names", "area", "--sources", jar.toString(), "--no-jar-cache");
         assertEquals(0, result.code(), result.err());
         assertTrue(result.out().contains(jar.toAbsolutePath() + "!/lib/Polygon.java:1"), result.out());
         assertTrue(result.out().contains("Shape.java"), "the project still answers: " + result.out());
@@ -128,7 +128,7 @@ class ConcordanceTest {
             zip.closeEntry();
         }
         Path shape = project(dir).resolve("src/main/java/demo/Shape.java");
-        Run result = run(dir, "search", "area", "--sources", jar.toString(), "--recent", shape.toString());
+        Run result = run(dir, "search", "area", "--sources", jar.toString(), "--no-jar-cache", "--recent", shape.toString());
         assertEquals(0, result.code(), result.err());
         int open = result.out().indexOf("== open (1 sources)");
         int libraries = result.out().indexOf("== other libraries (1 sources)");

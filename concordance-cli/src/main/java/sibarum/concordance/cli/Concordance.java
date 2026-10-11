@@ -2,6 +2,7 @@ package sibarum.concordance.cli;
 
 import sibarum.concordance.index.Hit;
 import sibarum.concordance.index.Index;
+import sibarum.concordance.index.JarCache;
 import sibarum.concordance.index.NameGroup;
 import sibarum.concordance.index.NameGroups;
 import sibarum.concordance.index.Plan;
@@ -63,6 +64,7 @@ public final class Concordance {
         List<Path> classJars = new ArrayList<>();
         List<Path> recent = new ArrayList<>();
         boolean libraries = false;
+        boolean jarCache = true;
         for (int i = 0; i < given.length; i++) {
             if (given[i].equals("--sources")) {
                 if (++i == given.length) return missing(err, "--sources", "<jar>");
@@ -70,6 +72,8 @@ public final class Concordance {
             } else if (given[i].equals("--recent")) {
                 if (++i == given.length) return missing(err, "--recent", "<file>");
                 recent.add(Path.of(given[i]));
+            } else if (given[i].equals("--no-jar-cache")) {
+                jarCache = false;
             } else if (given[i].equals("--libraries")) {
                 libraries = true;
             } else {
@@ -86,6 +90,7 @@ public final class Concordance {
 
         Index index;
         ProjectIndex built;
+        ProjectIndex.Changes changes;
         Classpath classpath = null;
         MavenProject project;
         long started = System.nanoTime();
@@ -102,7 +107,8 @@ public final class Concordance {
                 classpath.problems().forEach(p -> err.println("! " + p));
             }
             built = ProjectIndex.empty(project.rootDir());
-            built.synchronize(project.javaFiles(), jars, classJars);
+            if (jarCache) built.useJarCache(JarCache.defaultLocation());
+            changes = built.synchronize(project.javaFiles(), jars, classJars);
             built.problems().forEach(p -> err.println("! " + p));
             index = built.index();
         } catch (IOException e) {
@@ -121,7 +127,9 @@ public final class Concordance {
                 }
                 out.println(root + ": " + index.summary());
                 out.println("  " + project.modules().size() + " modules, " + files + " files, "
-                        + jars.size() + " sources jars, " + classJars.size() + " class jars, indexed in " + millis + " ms");
+                        + jars.size() + " sources jars, " + classJars.size() + " class jars"
+                        + (changes.fromCache() > 0 ? " (" + changes.fromCache() + " from the jar cache)" : "")
+                        + ", indexed in " + millis + " ms");
             }
             case "names" -> {
                 if (args.length < 3) return missing(err, "names", "<fragment>");
@@ -333,6 +341,8 @@ public final class Concordance {
                                               most recent first
                   --libraries                 also index every resolved library: its sources jar, or
                                               failing that its class files, shown decompiled
+                  --no-jar-cache              do not share library indexes through the jar cache
+                                              ($CONCORDANCE_JAR_CACHE, else ~/.concordance/jars)
                   --sources <jar>             also index a library's sources jar; repeatable. A library
                                               contributes what it exports -- public and protected types
                                               and members -- and no references.

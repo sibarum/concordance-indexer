@@ -68,6 +68,7 @@ final class IndexCodec {
     static final int FORMAT = 4;
 
     private static final int MAGIC = 0x434E4344;       // "CNCD"
+    private static final int JAR_MAGIC = 0x434E434A;   // "CNCJ"
     private static final int END = 0x2F434E43;         // "/CNC"
     private static final int MAX_STRING_BYTES = 1 << 20;
     private static final int MAX_DIGEST_BYTES = 64;
@@ -104,30 +105,61 @@ final class IndexCodec {
             writeRef(body, table, pathFor(index.root(), archive.file()));
             body.writeBoolean(archive.compiled());
             writeStamp(body, archive.size(), archive.modified(), archive.digest());
-            body.writeInt(archive.problems().size());
-            for (String problem : archive.problems()) {
-                writeRef(body, table, problem);
-            }
-            body.writeInt(archive.entries().size());
-            for (ProjectIndex.Entry entry : archive.entries()) {
-                writeRef(body, table, switch (entry.source()) {
-                    case Source.InArchive a -> a.entry();
-                    case Source.Decompiled d -> d.entry();
-                    case Source.OnDisk d -> throw new IllegalStateException("a file on disk inside a jar: " + d);
-                });
-                writeStamp(body, entry.size(), entry.modified(), entry.digest());
-                writeBody(body, table, entry);
-            }
+            writeArchiveContents(body, table, archive);
         }
         body.flush();
+        writeFile(file, MAGIC, fingerprint(), table, bytes);
+    }
 
+    /**
+     * One jar's index alone, for the {@link JarCache}: its problems and entries, by entry name and with no path, so
+     * it can be loaded for the same bytes wherever they are.
+     *
+     * <pre>
+     *   int     magic "CNCJ"
+     *   string  fingerprint — {@link #fingerprint()} and the limits the jar was indexed within
+     *   int     string count, then each string
+     *   archive contents: int problem count, problems; int entry count, then per entry: name; stamp; body
+     *   int     end marker
+     * </pre>
+     */
+    static void writeJar(ProjectIndex.Archive archive, Path file, String fingerprint) throws IOException {
+        Map<String, Integer> table = new LinkedHashMap<>();
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream body = new DataOutputStream(bytes);
+        writeArchiveContents(body, table, archive);
+        body.flush();
+        writeFile(file, JAR_MAGIC, fingerprint, table, bytes);
+    }
+
+    private static void writeArchiveContents(DataOutputStream body, Map<String, Integer> table,
+                                             ProjectIndex.Archive archive) throws IOException {
+        body.writeInt(archive.problems().size());
+        for (String problem : archive.problems()) {
+            writeRef(body, table, problem);
+        }
+        body.writeInt(archive.entries().size());
+        for (ProjectIndex.Entry entry : archive.entries()) {
+            writeRef(body, table, switch (entry.source()) {
+                case Source.InArchive a -> a.entry();
+                case Source.Decompiled d -> d.entry();
+                case Source.OnDisk d -> throw new IllegalStateException("a file on disk inside a jar: " + d);
+            });
+            writeStamp(body, entry.size(), entry.modified(), entry.digest());
+            writeBody(body, table, entry);
+        }
+    }
+
+    /** Header, string table, body, end marker — to a sibling first, then moved into place. */
+    private static void writeFile(Path file, int magic, String fingerprint, Map<String, Integer> table,
+                                  ByteArrayOutputStream bytes) throws IOException {
         Path target = file.toAbsolutePath();
         Files.createDirectories(target.getParent());
         Path partial = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".partial");
         try {
             try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(partial)))) {
-                out.writeInt(MAGIC);
-                writeString(out, fingerprint());
+                out.writeInt(magic);
+                writeString(out, fingerprint);
                 out.writeInt(table.size());
                 for (String s : table.keySet()) {
                     writeString(out, s);
@@ -237,17 +269,8 @@ final class IndexCodec {
                 long modified = in.readLong();
                 byte[] digest = readDigest(in);
                 List<String> problems = new ArrayList<>();
-                int problemCount = count(in, maxCount);
-                for (int p = 0; p < problemCount; p++) {
-                    problems.add(table[in.readInt()]);
-                }
                 List<ProjectIndex.Entry> inside = new ArrayList<>();
-                int entryCount = count(in, maxCount);
-                for (int e = 0; e < entryCount; e++) {
-                    String name = table[in.readInt()];
-                    Source source = compiled ? new Source.Decompiled(path, name) : new Source.InArchive(path, name);
-                    inside.add(readEntry(in, maxCount, table, source));
-                }
+                readArchiveContents(in, maxCount, table, path, compiled, problems, inside);
                 archives.put(path, new ProjectIndex.Archive(path, size, modified, digest, inside, problems, compiled));
             }
 
@@ -257,6 +280,54 @@ final class IndexCodec {
             // Truncated, or bytes that are not this format: a string index out of the table, a kind that does
             // not exist, a negative count. Either way there is no index here to use.
             return Optional.empty();
+        }
+    }
+
+    /** What one jar's cache file holds, its sources placed in the jar it is loaded for. */
+    record JarContents(List<ProjectIndex.Entry> entries, List<String> problems) {}
+
+    /**
+     * The jar index at {@code file}, its sources placed in {@code jar} — or empty when there is none, it was written
+     * under another {@code fingerprint}, or it is not a whole file of this format. Empty means "index the jar".
+     */
+    static Optional<JarContents> readJar(Path file, Path jar, boolean compiled, String fingerprint) throws IOException {
+        InputStream raw;
+        long maxCount;
+        try {
+            raw = Files.newInputStream(file);
+            maxCount = Files.size(file);
+        } catch (NoSuchFileException absent) {
+            return Optional.empty();
+        }
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(raw))) {
+            if (in.readInt() != JAR_MAGIC) return Optional.empty();
+            if (!fingerprint.equals(readString(in))) return Optional.empty();
+            String[] table = new String[count(in, maxCount)];
+            for (int i = 0; i < table.length; i++) {
+                table[i] = readString(in);
+            }
+            List<String> problems = new ArrayList<>();
+            List<ProjectIndex.Entry> entries = new ArrayList<>();
+            readArchiveContents(in, maxCount, table, jar, compiled, problems, entries);
+            if (in.readInt() != END || in.read() != -1) return Optional.empty();
+            return Optional.of(new JarContents(entries, problems));
+        } catch (EOFException | RuntimeException notAJarIndex) {
+            return Optional.empty();
+        }
+    }
+
+    private static void readArchiveContents(DataInputStream in, long maxCount, String[] table, Path jar,
+                                            boolean compiled, List<String> problems, List<ProjectIndex.Entry> entries)
+            throws IOException {
+        int problemCount = count(in, maxCount);
+        for (int p = 0; p < problemCount; p++) {
+            problems.add(table[in.readInt()]);
+        }
+        int entryCount = count(in, maxCount);
+        for (int e = 0; e < entryCount; e++) {
+            String name = table[in.readInt()];
+            Source source = compiled ? new Source.Decompiled(jar, name) : new Source.InArchive(jar, name);
+            entries.add(readEntry(in, maxCount, table, source));
         }
     }
 
