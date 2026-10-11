@@ -8,6 +8,9 @@ import org.jetbrains.java.decompiler.main.extern.IResultSaver;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -15,6 +18,7 @@ import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.ServiceConfigurationError;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -46,6 +50,88 @@ final class Decompilation {
     static final String VERSION = "vineflower-1.12.0;indent=4";
 
     private static final int CACHED = 32;
+
+    /**
+     * How Vineflower sees the JDK's own classes, which it needs to infer generic types: with them,
+     * {@code new PriorityQueue<>()}; without, the raw {@code new PriorityQueue()}.
+     *
+     * <ul>
+     *   <li>Through {@code jrt:}, the running JDK's module image — always there on the JVM.
+     *   <li>Failing that, through a JDK's {@code jmods}, found by {@code java.home} or {@code JAVA_HOME}. This is the
+     *       native image's way: its {@code jrt:} opens only the module image of the JDK that built it, at the path
+     *       that JDK had, whatever {@code java.home} says, so on any other machine it fails.
+     *   <li>Failing both, not at all: the text is a little worse, and {@link #jdk()} says so.
+     * </ul>
+     */
+    private static final Jdk JDK = findJdk();
+
+    private record Jdk(String includeRuntime, List<ZipFile> jmods, String description) {}
+
+    /** Where the decompiler's view of the JDK comes from, in a phrase. */
+    static String jdk() {
+        return JDK.description();
+    }
+
+    private static Jdk findJdk() {
+        try {
+            FileSystem jrt = FileSystems.getFileSystem(URI.create("jrt:/"));
+            if (Files.isRegularFile(jrt.getPath("/modules/java.base/java/lang/Object.class"))) {
+                return new Jdk("current", List.of(), "the running JDK");
+            }
+        } catch (RuntimeException | InternalError | ServiceConfigurationError unavailable) {
+            // A native image's jrt: points at the JDK that built it; elsewhere it throws InternalError.
+        }
+        for (String home : new String[] {System.getProperty("java.home"), System.getenv("JAVA_HOME")}) {
+            if (home == null) continue;
+            Path jmods = Path.of(home, "jmods");
+            if (!Files.isRegularFile(jmods.resolve("java.base.jmod"))) continue;
+            List<ZipFile> open = new ArrayList<>();
+            try (var listing = Files.newDirectoryStream(jmods, "*.jmod")) {
+                for (Path jmod : listing) open.add(new ZipFile(jmod.toFile()));
+            } catch (IOException | RuntimeException unreadable) {
+                continue;
+            }
+            return new Jdk("0", List.copyOf(open), "the JDK at " + home + " (jmods)");
+        }
+        return new Jdk("0", List.of(), "no JDK, so generic types are inferred less well");
+    }
+
+    /**
+     * A JDK's classes from its {@code jmods}, which are zips with the classes under {@code classes/}. Lazy: the
+     * decompiler asks for a class by name when it needs one, so a JDK's tens of thousands cost nothing until then.
+     * The zips stay open for the life of the process; they are the JDK's, not the project's.
+     */
+    private record JdkModules(List<ZipFile> jmods, Limits limits) implements IContextSource {
+
+        @Override
+        public String getName() {
+            return "jdk";
+        }
+
+        @Override
+        public boolean isLazy() {
+            return true;
+        }
+
+        @Override
+        public Entries getEntries() {
+            return Entries.EMPTY;
+        }
+
+        @Override
+        public InputStream getInputStream(String resource) throws IOException {
+            String name = "classes/" + (resource.endsWith(".class") ? resource : resource + ".class");
+            for (ZipFile jmod : jmods) {
+                ZipEntry entry = jmod.getEntry(name);
+                if (entry == null) continue;
+                try (InputStream in = jmod.getInputStream(entry)) {
+                    byte[] bytes = ParseWorker.readBounded(in, limits.maxSourceBytes());
+                    return bytes == null ? null : new ByteArrayInputStream(bytes);
+                }
+            }
+            return null;
+        }
+    }
 
     private record Key(Path jar, String entry, long size, long modified) {}
 
@@ -100,10 +186,11 @@ final class Decompilation {
                 Map<String, String> out = new LinkedHashMap<>();
                 Decompiler.builder()
                         .inputs(new Classes(zip, own, limits, out))
-                        .libraries(new Classes(zip, all, limits, null))
+                        .libraries(libraries(new Classes(zip, all, limits, null), limits))
                         .output(NO_FILES)
                         .logger(IFernflowerLogger.NO_OP)
                         .option("banner", "")
+                        .option("include-runtime", JDK.includeRuntime())
                         .option("thread-count", "1")
                         .option("decompile-inner", "1")
                         .option("indent-string", "    ")
@@ -140,6 +227,13 @@ final class Decompilation {
                     + "-byte limit for one source");
         }
         return text[0];
+    }
+
+    /** The jar itself, and the JDK's classes when they come from jmods rather than from jrt:. */
+    private static IContextSource[] libraries(IContextSource jar, Limits limits) {
+        return JDK.jmods().isEmpty()
+                ? new IContextSource[] {jar}
+                : new IContextSource[] {jar, new JdkModules(JDK.jmods(), limits)};
     }
 
     /**

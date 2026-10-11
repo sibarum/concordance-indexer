@@ -162,6 +162,11 @@ public sealed interface Source {
         public String toString() {
             return archive + "!/" + entry;
         }
+
+        /** Where the decompiler's view of the JDK's classes comes from, in a phrase; see {@link Decompilation}. */
+        public static String jdk() {
+            return Decompilation.jdk();
+        }
     }
 
     /** A file on disk, made absolute and normalized so one file is one source however it was spelled. */

@@ -78,12 +78,17 @@
                             <imageName>concordance</imageName>
                             <mainClass>${app.mainClass}</mainClass>
                             <buildArgs>
+                                <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
                                 <buildArg>-O2</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <!-- native-image writes helper executables and runs them; keeping them under
                                      target/ rather than the system temp is one less thing for a code-integrity
                                      policy to object to. See docs/javaparser-evaluation.md. -->
                                 <buildArg>-H:TempDirectory=${project.build.directory}/svm-tmp</buildArg>
+                                <!-- Lets the decompiler read the building JDK's classes through jrt: on the machine
+                                     that built the binary. jrt: in a native image opens only that JDK, at that path;
+                                     elsewhere the decompiler uses a JDK's jmods instead. See Decompilation.JDK. -->
+                                <buildArg>-H:+AllowJRTFileSystem</buildArg>
                             </buildArgs>
                         </configuration>
                     </plugin>

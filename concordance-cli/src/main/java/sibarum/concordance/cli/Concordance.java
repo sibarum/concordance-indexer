@@ -243,7 +243,8 @@ public final class Concordance {
         try {
             SourceRef at = symbol.source().locate(symbol);
             List<String> lines = symbol.source().text().lines().toList();
-            String how = symbol.source() instanceof Source.Decompiled ? " (decompiled, read-only)"
+            String how = symbol.source() instanceof Source.Decompiled
+                    ? " (read-only, decompiled with " + Source.Decompiled.jdk() + ")"
                     : symbol.source().readOnly() ? " (read-only)" : "";
             out.println("== " + at + how);
             for (int n = Math.max(1, at.line() - 2); n <= Math.min(lines.size(), at.line() + 15); n++) {
