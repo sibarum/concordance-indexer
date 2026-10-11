@@ -103,14 +103,14 @@ class SourcesJarTest {
         Index index = withJar(dir, widgets(dir)).index();
         assertEquals(List.of(
                         "lib.api.Point", "lib.api.Point#x", "lib.api.Point#y",
-                        "lib.api.Shade", "lib.api.Shade#light()",
+                        "lib.api.Shade", "lib.api.Shade#LIGHT", "lib.api.Shade#DARK", "lib.api.Shade#light()",
                         "lib.api.Widget", "lib.api.Widget#show()", "lib.api.Widget#layout()",
                         "lib.api.Widget#<init>()", "lib.api.Widget#SIZE", "lib.api.Widget#count",
                         "lib.api.Widget.Part", "lib.api.Widget.Part#fit()",
                         "lib.api.Widget.Hook", "lib.api.Widget.Hook#fire()"),
                 qualified(index),
-                "public and protected members of exported types, interface members unless private, record "
-                        + "components; never package-private, private, local, an enum constructor, or META-INF");
+                "public and protected members of exported types, enum constants, interface members unless "
+                        + "private, record components; never package-private, private, local, an enum constructor, or META-INF");
     }
 
     @Test
@@ -155,7 +155,7 @@ class SourcesJarTest {
     void outlinesWorkInsideAnArchive(@TempDir Path dir) throws IOException {
         Path jar = widgets(dir);
         List<Symbol> outline = withJar(dir, jar).index().declaredIn(new Source.InArchive(jar, "lib/api/Shade.java"));
-        assertEquals(List.of("Shade", "light"), outline.stream().map(Symbol::name).toList());
+        assertEquals(List.of("Shade", "LIGHT", "DARK", "light"), outline.stream().map(Symbol::name).toList());
     }
 
     // --- when it is reread --------------------------------------------------------------------

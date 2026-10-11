@@ -21,7 +21,7 @@ public record Symbol(
         List<String> supers) {
 
     public enum Kind {
-        CLASS, INTERFACE, ENUM, RECORD, ANNOTATION, METHOD, CONSTRUCTOR, FIELD;
+        CLASS, INTERFACE, ENUM, RECORD, ANNOTATION, METHOD, CONSTRUCTOR, FIELD, ENUM_CONSTANT;
 
         /** Whether this kind declares a type, as opposed to a member of one. */
         public boolean isType() {

@@ -43,7 +43,7 @@ public final class IndexBuilder {
      * something differently — because an index saved by an older builder is then not one this builder would
      * produce, and {@link ProjectIndex#load} must refuse it rather than mix the two.
      */
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     private IndexBuilder() {}
 
@@ -199,6 +199,13 @@ public final class IndexBuilder {
     /** A type's own methods, constructors and fields — only the exported ones when {@code exportsOnly}. */
     private static void collectMembers(TypeDeclaration<?> type, String qualified, Source file, boolean exportsOnly,
                                        List<Symbol> symbols) {
+        // An enum's constants come first, as they do in its source. Each is public wherever its enum is.
+        if (type instanceof EnumDeclaration enumeration) {
+            for (EnumConstantDeclaration constant : enumeration.getEntries()) {
+                symbols.add(new Symbol(Symbol.Kind.ENUM_CONSTANT, constant.getNameAsString(), qualified,
+                        qualified + "#" + constant.getNameAsString(), at(file, constant), List.of()));
+            }
+        }
         for (MethodDeclaration method : type.getMethods()) {
             if (exportsOnly && !visible(method)) continue;
             symbols.add(new Symbol(Symbol.Kind.METHOD, method.getNameAsString(), qualified,

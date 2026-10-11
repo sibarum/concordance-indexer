@@ -258,6 +258,19 @@ class IndexTest {
         assertEquals(Symbol.Kind.RECORD, typeNamed(index, "Point").kind());
     }
 
+    @Test
+    void enumConstantsAreDeclarationsOfTheirEnum() {
+        Index index = IndexBuilder.buildSource(FAKE, """
+                package demo;
+                enum Shade { LIGHT, DARK { boolean dark() { return true; } }; Shade() {} }
+                """);
+        List<Symbol> constants = index.symbols().stream()
+                .filter(s -> s.kind() == Symbol.Kind.ENUM_CONSTANT).toList();
+        assertEquals(List.of("demo.Shade#LIGHT", "demo.Shade#DARK"), constants.stream().map(Symbol::qualified).toList());
+        assertEquals(List.of("demo.Shade"), constants.stream().map(Symbol::owner).distinct().toList());
+        assertEquals(1, index.namesContaining("LIGHT").size(), "found by name like any other declaration");
+    }
+
     // --- the real thing -----------------------------------------------------------------------
 
     @Test
