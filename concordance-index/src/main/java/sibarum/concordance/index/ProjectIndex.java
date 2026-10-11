@@ -99,9 +99,11 @@ public final class ProjectIndex {
 
     /**
      * A sources jar, stamped as a whole, what each of its {@code .java} entries contributed, and what went wrong
-     * with the jar as a whole: unreadable, or over a budget part way through.
+     * with the jar as a whole: unreadable, or over a budget part way through. A {@code compiled} jar is one read for
+     * its class files, its entries one per top-level class, each a {@link Source.Decompiled}.
      */
-    record Archive(Path file, long size, long modified, byte[] digest, List<Entry> entries, List<String> problems) {
+    record Archive(Path file, long size, long modified, byte[] digest, List<Entry> entries, List<String> problems,
+                   boolean compiled) {
 
         Archive {
             entries = List.copyOf(entries);
@@ -109,7 +111,7 @@ public final class ProjectIndex {
         }
 
         Archive restamped(long size, long modified) {
-            return new Archive(file, size, modified, digest, entries, problems);
+            return new Archive(file, size, modified, digest, entries, problems, compiled);
         }
     }
 
@@ -268,6 +270,16 @@ public final class ProjectIndex {
      * exists.
      */
     public Changes synchronize(Collection<Path> files, Collection<Path> sourcesJars) throws IOException {
+        return synchronize(files, sourcesJars, List.of());
+    }
+
+    /**
+     * Brings the index up to date with {@code files}, {@code sourcesJars}, and {@code classJars} — libraries with no
+     * sources, indexed from their class files (see {@link ClassFiles}) and shown decompiled — which together are
+     * the whole of what it should hold. A jar listed twice is indexed the first way it is listed.
+     */
+    public Changes synchronize(Collection<Path> files, Collection<Path> sourcesJars, Collection<Path> classJars)
+            throws IOException {
         Map<Path, Entry> nextEntries = new LinkedHashMap<>();
         Map<Path, Archive> nextArchives = new LinkedHashMap<>();
         Sync sync = new Sync(System.currentTimeMillis(), limits);
@@ -281,7 +293,13 @@ public final class ProjectIndex {
             for (Path given : sourcesJars) {
                 Path jar = normalize(given);
                 if (nextArchives.containsKey(jar)) continue;
-                Archive archive = sync.archive(jar, archives.get(jar));
+                Archive archive = sync.archive(jar, archives.get(jar), false);
+                if (archive != null) nextArchives.put(jar, archive);
+            }
+            for (Path given : classJars) {
+                Path jar = normalize(given);
+                if (nextArchives.containsKey(jar)) continue;
+                Archive archive = sync.archive(jar, archives.get(jar), true);
                 if (archive != null) nextArchives.put(jar, archive);
             }
         }
@@ -355,8 +373,9 @@ public final class ProjectIndex {
             }
         }
 
-        /** The jar's archive as it stands now, or null when it no longer exists. */
-        Archive archive(Path jar, Archive old) throws IOException {
+        /** The jar's archive, read for its sources or its classes, as it stands now; null if it no longer exists. */
+        Archive archive(Path jar, Archive old, boolean compiled) throws IOException {
+            if (old != null && old.compiled() != compiled) old = null;   // read the other way before: start over
             Read read = read(jar, old == null ? null : new Stamp(old.size(), old.modified(), old.digest()), false);
             switch (read) {
                 case null -> { return null; }
@@ -374,13 +393,13 @@ public final class ProjectIndex {
                     List<String> problems = new ArrayList<>();
                     List<Entry> entries;
                     try {
-                        entries = entriesOf(jar, old, problems);
+                        entries = compiled ? classEntriesOf(jar, problems) : entriesOf(jar, old, problems);
                     } catch (IOException unreadable) {
                         // A jar the zip reader refuses is a problem of that jar, not of the synchronize.
                         problems.add("not a readable zip: " + unreadable.getMessage());
                         entries = List.of();
                     }
-                    return new Archive(jar, Files.size(jar), modified, digest, entries, problems);
+                    return new Archive(jar, Files.size(jar), modified, digest, entries, problems, compiled);
                 }
             }
         }
@@ -447,6 +466,70 @@ public final class ProjectIndex {
                     String problem = worker().collect(at, content, true, exported, symbols, List.of());
                     out.add(new Entry(at, content.length, 0, digest, symbols, List.of(), problem));
                 }
+                return out;
+            }
+        }
+
+        /**
+         * A jar's exported declarations, read from its class files and grouped by top-level class: one entry per
+         * top-level class, its source the {@link Source.Decompiled} that class is shown as. Class reading is fast
+         * and needs no parser, so a changed jar is simply read again. A class file the reader refuses is that
+         * class's problem; {@code META-INF}, multi-release copies included, is skipped.
+         */
+        private List<Entry> classEntriesOf(Path jar, List<String> problems) throws IOException {
+            try (ZipFile zip = new ZipFile(jar.toFile())) {
+                List<ZipEntry> classes = new ArrayList<>();
+                ZipEntry moduleInfo = null;
+                for (Enumeration<? extends ZipEntry> all = zip.entries(); all.hasMoreElements(); ) {
+                    ZipEntry e = all.nextElement();
+                    String name = e.getName();
+                    if (e.isDirectory() || !name.endsWith(".class") || name.startsWith("META-INF/")) continue;
+                    if (name.equals("module-info.class")) moduleInfo = e;
+                    else classes.add(e);
+                }
+                classes.sort(java.util.Comparator.comparing(ZipEntry::getName));
+                if (classes.size() > limits.maxArchiveEntries()) {
+                    problems.add("has " + classes.size() + " class files; only the first " + limits.maxArchiveEntries()
+                            + " by name are indexed");
+                    classes = classes.subList(0, limits.maxArchiveEntries());
+                }
+
+                long[] budget = {limits.maxArchiveSourceBytes()};
+                Set<String> exported = null;
+                if (moduleInfo != null) {
+                    byte[] bytes = take(zip, moduleInfo, budget);
+                    try {
+                        exported = bytes == null ? null : ClassFiles.exportsOf(bytes);
+                    } catch (RuntimeException | StackOverflowError broken) {
+                        problems.add("module-info.class could not be read, so every package counts as exported: "
+                                + broken);
+                    }
+                }
+
+                List<ClassFiles.Read> read = new ArrayList<>();
+                for (ZipEntry e : classes) {
+                    boolean budgetBinds = budget[0] < limits.maxSourceBytes();
+                    byte[] bytes = take(zip, e, budget);
+                    if (bytes == null && budgetBinds) {
+                        problems.add("holds more than " + limits.maxArchiveSourceBytes()
+                                + " bytes of classes; entries from " + e.getName() + " on are not indexed");
+                        break;
+                    }
+                    if (bytes == null) {
+                        problems.add(e.getName() + ": " + tooLarge(e.getSize()));
+                        continue;
+                    }
+                    try {
+                        read.add(ClassFiles.read(e.getName(), bytes));
+                    } catch (RuntimeException | StackOverflowError broken) {
+                        problems.add(e.getName() + ": not a class file this reader accepts (" + broken.getMessage()
+                                + "), so not indexed");
+                    }
+                }
+
+                List<Entry> out = new ArrayList<>();
+                ClassFiles.symbols(jar, read, exported).forEach((entry, symbols) -> out.add(new Entry(
+                        new Source.Decompiled(jar, entry), 0, 0, new byte[0], symbols, List.of(), "")));
                 return out;
             }
         }

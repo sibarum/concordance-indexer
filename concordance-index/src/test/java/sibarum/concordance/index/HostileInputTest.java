@@ -59,7 +59,7 @@ class HostileInputTest {
     }
 
     private static Limits small(long maxSource, long maxArchive, int maxEntries) {
-        return new Limits(maxSource, maxArchive, maxEntries, Limits.DEFAULT.parseStackBytes());
+        return new Limits(maxSource, maxArchive, maxEntries, Limits.DEFAULT.parseStackBytes(), Limits.DEFAULT.decompileMillis());
     }
 
     // --- parsing -------------------------------------------------------------------------------
@@ -78,7 +78,7 @@ class HostileInputTest {
     void nestingPastEvenTheParseStackCostsOnlyThatFile() throws IOException {
         Path jar = jar("deep.jar", entries("p/Deep.java", nested(20_000), "p/Fine.java", FINE));
         Limits tight = new Limits(Limits.DEFAULT.maxSourceBytes(), Limits.DEFAULT.maxArchiveSourceBytes(),
-                Limits.DEFAULT.maxArchiveEntries(), 1L << 20);
+                Limits.DEFAULT.maxArchiveEntries(), 1L << 20, Limits.DEFAULT.decompileMillis());
         ProjectIndex live = ProjectIndex.empty(dir, tight);
 
         live.synchronize(List.of(), List.of(jar));
@@ -94,7 +94,7 @@ class HostileInputTest {
         Files.writeString(deep, nested(20_000));
         Files.setLastModifiedTime(deep, FileTime.from(Instant.now().minusSeconds(60)));
         Limits tight = new Limits(Limits.DEFAULT.maxSourceBytes(), Limits.DEFAULT.maxArchiveSourceBytes(),
-                Limits.DEFAULT.maxArchiveEntries(), 1L << 20);
+                Limits.DEFAULT.maxArchiveEntries(), 1L << 20, Limits.DEFAULT.decompileMillis());
         ProjectIndex live = ProjectIndex.empty(dir, tight);
 
         assertEquals(1, live.synchronize(List.of(deep)).added().size());

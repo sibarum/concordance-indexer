@@ -16,14 +16,19 @@ package sibarum.concordance.index;
  *                              depth costs stack: a default thread stack overflows at a few hundred nested
  *                              parentheses, and a file nested deeper than this stack allows is a problem, not a
  *                              crash.
+ * @param decompileMillis       how long decompiling one class for display may take. Obfuscated control flow can
+ *                              send a decompiler round in circles; past this, the class is not shown, rather than
+ *                              the caller kept waiting.
  */
-public record Limits(long maxSourceBytes, long maxArchiveSourceBytes, int maxArchiveEntries, long parseStackBytes) {
+public record Limits(long maxSourceBytes, long maxArchiveSourceBytes, int maxArchiveEntries, long parseStackBytes,
+                     long decompileMillis) {
 
     /** Generous for real code — the largest generated sources run to a few megabytes — and finite for the rest. */
-    public static final Limits DEFAULT = new Limits(16L << 20, 1L << 30, 200_000, 256L << 20);
+    public static final Limits DEFAULT = new Limits(16L << 20, 1L << 30, 200_000, 256L << 20, 30_000);
 
     public Limits {
-        if (maxSourceBytes <= 0 || maxArchiveSourceBytes <= 0 || maxArchiveEntries <= 0 || parseStackBytes <= 0) {
+        if (maxSourceBytes <= 0 || maxArchiveSourceBytes <= 0 || maxArchiveEntries <= 0 || parseStackBytes <= 0
+                || decompileMillis <= 0) {
             throw new IllegalArgumentException("every limit must be positive: " + this);
         }
     }

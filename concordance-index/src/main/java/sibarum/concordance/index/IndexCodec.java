@@ -36,12 +36,13 @@ import java.util.stream.Collectors;
  *             string  path, relative to the project root when it is under it
  *             stamp   long size, long modified, int digest length, digest bytes
  *             body
- *   int     archive count, then per sources jar:
+ *   int     archive count, then per jar:
  *             string  path, relative to the project root when it is under it
+ *             boolean compiled: read for its classes, entries decompiled, rather than for its sources
  *             stamp
  *             int     problem count, then each problem string
  *             int     entry count, then per entry:
- *                       string entry name; stamp; body
+ *                       string entry name (a top-level class file, for a compiled jar); stamp; body
  *
  *   body:   int     symbol count, then per symbol:
  *                     string kind, name, owner, qualified; int line, column; int super count, strings
@@ -64,7 +65,7 @@ import java.util.stream.Collectors;
 final class IndexCodec {
 
     /** The byte layout above. Bump it whenever the layout, or any record written through it, changes shape. */
-    static final int FORMAT = 3;
+    static final int FORMAT = 4;
 
     private static final int MAGIC = 0x434E4344;       // "CNCD"
     private static final int END = 0x2F434E43;         // "/CNC"
@@ -77,6 +78,7 @@ final class IndexCodec {
     static String fingerprint() {
         return "concordance-index format=" + FORMAT
                 + " builder=" + IndexBuilder.VERSION
+                + " classes=" + ClassFiles.VERSION
                 + " symbols=" + Arrays.stream(Symbol.Kind.values()).map(Enum::name).collect(Collectors.joining(","))
                 + " references=" + Arrays.stream(Reference.Kind.values()).map(Enum::name)
                 .collect(Collectors.joining(","));
@@ -100,6 +102,7 @@ final class IndexCodec {
         body.writeInt(index.archiveEntries().size());
         for (ProjectIndex.Archive archive : index.archiveEntries()) {
             writeRef(body, table, pathFor(index.root(), archive.file()));
+            body.writeBoolean(archive.compiled());
             writeStamp(body, archive.size(), archive.modified(), archive.digest());
             body.writeInt(archive.problems().size());
             for (String problem : archive.problems()) {
@@ -107,7 +110,11 @@ final class IndexCodec {
             }
             body.writeInt(archive.entries().size());
             for (ProjectIndex.Entry entry : archive.entries()) {
-                writeRef(body, table, ((Source.InArchive) entry.source()).entry());
+                writeRef(body, table, switch (entry.source()) {
+                    case Source.InArchive a -> a.entry();
+                    case Source.Decompiled d -> d.entry();
+                    case Source.OnDisk d -> throw new IllegalStateException("a file on disk inside a jar: " + d);
+                });
                 writeStamp(body, entry.size(), entry.modified(), entry.digest());
                 writeBody(body, table, entry);
             }
@@ -225,6 +232,7 @@ final class IndexCodec {
             int jars = count(in, maxCount);
             for (int j = 0; j < jars; j++) {
                 Path path = root.resolve(table[in.readInt()]).normalize();
+                boolean compiled = in.readBoolean();
                 long size = in.readLong();
                 long modified = in.readLong();
                 byte[] digest = readDigest(in);
@@ -236,9 +244,11 @@ final class IndexCodec {
                 List<ProjectIndex.Entry> inside = new ArrayList<>();
                 int entryCount = count(in, maxCount);
                 for (int e = 0; e < entryCount; e++) {
-                    inside.add(readEntry(in, maxCount, table, new Source.InArchive(path, table[in.readInt()])));
+                    String name = table[in.readInt()];
+                    Source source = compiled ? new Source.Decompiled(path, name) : new Source.InArchive(path, name);
+                    inside.add(readEntry(in, maxCount, table, source));
                 }
-                archives.put(path, new ProjectIndex.Archive(path, size, modified, digest, inside, problems));
+                archives.put(path, new ProjectIndex.Archive(path, size, modified, digest, inside, problems, compiled));
             }
 
             if (in.readInt() != END || in.read() != -1) return Optional.empty();

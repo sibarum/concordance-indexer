@@ -6,6 +6,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -101,6 +105,65 @@ public sealed interface Source {
         }
     }
 
+    /**
+     * A library class that came without its source, shown as Vineflower decompiles it: the top-level class at
+     * {@code entry} in {@code archive}, with its nested classes. Its declarations were read from the class files
+     * and start unplaced, at line 0; {@link #locate} finds them in the text.
+     *
+     * @param archive the jar on disk
+     * @param entry   the top-level class file's entry, {@code a/b/Outer.class}
+     */
+    record Decompiled(Path archive, String entry) implements Source {
+
+        public Decompiled {
+            if (archive == null || entry == null || !entry.endsWith(".class")) {
+                throw new IllegalArgumentException("Decompiled needs an archive and a .class entry: " + entry);
+            }
+        }
+
+        /** The decompiled text, within {@link Limits#DEFAULT}'s size and time budgets. */
+        @Override
+        public byte[] read() throws IOException {
+            return text().getBytes(StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public String text() throws IOException {
+            return Decompilation.of(archive, entry, Limits.DEFAULT);
+        }
+
+        @Override
+        public boolean readOnly() {
+            return true;
+        }
+
+        /**
+         * Decompiles the class, parses the text, and finds the declaration in it: the member itself when the
+         * decompiled text declares it recognisably, else its type, else the top of the class. Decompiled text
+         * that does not parse, which obfuscated bytecode can produce, places everything at the top.
+         */
+        @Override
+        public SourceRef locate(Symbol symbol) throws IOException {
+            if (!symbol.source().equals(this) || symbol.line() > 0) return symbol.at();
+            String text = text();
+            List<Symbol> declared = new ArrayList<>();
+            try (ParseWorker worker = new ParseWorker(Limits.DEFAULT)) {
+                worker.collect(this, text.getBytes(StandardCharsets.UTF_8), false, null, declared, new ArrayList<>());
+            }
+            Map<String, SourceRef> placed = new HashMap<>();
+            for (Symbol d : declared) placed.putIfAbsent(ClassFiles.normalized(d.qualified()), d.at());
+            SourceRef found = placed.get(ClassFiles.normalized(symbol.qualified()));
+            if (found == null) found = placed.get(ClassFiles.normalized(symbol.owner()));
+            return found != null ? found : new SourceRef(this, 1, 1);
+        }
+
+        /** {@code archive!/entry}, the spelling a {@code jar:} URL and most tools use. */
+        @Override
+        public String toString() {
+            return archive + "!/" + entry;
+        }
+    }
+
     /** A file on disk, made absolute and normalized so one file is one source however it was spelled. */
     static Source of(Path file) {
         return new OnDisk(file.toAbsolutePath().normalize());
@@ -116,4 +179,13 @@ public sealed interface Source {
 
     /** Whether an editor should refuse to change this source: true for anything that is not a file of its own. */
     boolean readOnly();
+
+    /**
+     * Where {@code symbol}, declared in this source, is in this source's text. Its own position, except for a
+     * declaration read from a class file, which is unplaced until its class is decompiled; see
+     * {@link Decompiled#locate}.
+     */
+    default SourceRef locate(Symbol symbol) throws IOException {
+        return symbol.at();
+    }
 }

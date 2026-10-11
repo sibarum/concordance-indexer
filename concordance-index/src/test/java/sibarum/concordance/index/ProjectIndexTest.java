@@ -287,7 +287,7 @@ class ProjectIndexTest {
         String shapes = Stream.of(Symbol.class, Reference.class, SourceRef.class)
                 .map(ProjectIndexTest::shape)
                 .collect(Collectors.joining("; "));
-        assertEquals(3, IndexCodec.FORMAT, "FORMAT moved; update the shapes below to match it");
+        assertEquals(4, IndexCodec.FORMAT, "FORMAT moved; update the shapes below to match it");
         assertEquals("Symbol(Kind kind, String name, String owner, String qualified, SourceRef at, List supers); "
                         + "Reference(Kind kind, String target, String name, String from, SourceRef at); "
                         + "SourceRef(Source source, int line, int column)",

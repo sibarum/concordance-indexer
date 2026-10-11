@@ -73,8 +73,8 @@ public final class Plan {
         Map<Path, Integer> depths = new HashMap<>();
         if (classpath != null) {
             for (Dependency d : classpath.dependencies()) {
-                if (d.sourcesJar() != null) {
-                    depths.merge(d.sourcesJar().toAbsolutePath().normalize(), d.depth(), Math::min);
+                for (Path jar : java.util.Arrays.asList(d.sourcesJar(), d.jar())) {
+                    if (jar != null) depths.merge(jar.toAbsolutePath().normalize(), d.depth(), Math::min);
                 }
             }
         }
@@ -177,6 +177,10 @@ public final class Plan {
     }
 
     private int depthOf(Source source) {
-        return source instanceof Source.InArchive a ? depths.getOrDefault(a.archive(), 1) : 0;
+        return switch (source) {
+            case Source.InArchive a -> depths.getOrDefault(a.archive(), 1);
+            case Source.Decompiled d -> depths.getOrDefault(d.archive(), 1);
+            case Source.OnDisk d -> 0;
+        };
     }
 }

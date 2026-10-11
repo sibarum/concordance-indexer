@@ -10,6 +10,7 @@ import sibarum.concordance.index.Query;
 import sibarum.concordance.index.Reference;
 import sibarum.concordance.index.Search;
 import sibarum.concordance.index.Source;
+import sibarum.concordance.index.SourceRef;
 import sibarum.concordance.index.Symbol;
 import sibarum.concordance.project.Classpath;
 import sibarum.concordance.project.Dependency;
@@ -37,6 +38,7 @@ import java.util.Map;
  * concordance <project> impls <type> [method]
  * concordance <project> summary
  * concordance <project> deps
+ * concordance <project> show <name>
  * concordance <project> search <fragment> [--recent <file> ...]
  * concordance <project> <query> [args] [--libraries] [--sources <jar> ...]
  * }</pre>
@@ -58,6 +60,7 @@ public final class Concordance {
         // Flags may appear anywhere after the project; everything else is positional.
         List<String> positional = new ArrayList<>();
         List<Path> jars = new ArrayList<>();
+        List<Path> classJars = new ArrayList<>();
         List<Path> recent = new ArrayList<>();
         boolean libraries = false;
         for (int i = 0; i < given.length; i++) {
@@ -94,10 +97,12 @@ public final class Concordance {
             if (libraries) {
                 classpath = DependencyResolver.resolve(project, LocalRepository.locate());
                 jars.addAll(classpath.sourcesJars());
+                classpath.withoutSources().stream().map(Dependency::jar).filter(java.util.Objects::nonNull)
+                        .forEach(classJars::add);
                 classpath.problems().forEach(p -> err.println("! " + p));
             }
             built = ProjectIndex.empty(project.rootDir());
-            built.synchronize(project.javaFiles(), jars);
+            built.synchronize(project.javaFiles(), jars, classJars);
             built.problems().forEach(p -> err.println("! " + p));
             index = built.index();
         } catch (IOException e) {
@@ -116,7 +121,7 @@ public final class Concordance {
                 }
                 out.println(root + ": " + index.summary());
                 out.println("  " + project.modules().size() + " modules, " + files + " files, "
-                        + jars.size() + " sources jars, indexed in " + millis + " ms");
+                        + jars.size() + " sources jars, " + classJars.size() + " class jars, indexed in " + millis + " ms");
             }
             case "names" -> {
                 if (args.length < 3) return missing(err, "names", "<fragment>");
@@ -142,6 +147,10 @@ public final class Concordance {
                 note(out, hits.size(), args.length > 3
                         ? "implementations of " + args[2] + "." + args[3]
                         : "types implementing or extending " + args[2], millis);
+            }
+            case "show" -> {
+                if (args.length < 3) return missing(err, "show", "<name>");
+                return show(index, args[2], out, err);
             }
             case "search" -> {
                 if (args.length < 3) return missing(err, "search", "<fragment>");
@@ -213,6 +222,40 @@ public final class Concordance {
         }
     }
 
+    /**
+     * The text around one declaration — from its file, its sources jar, or decompiled from its class — with the
+     * declaration's line marked. {@code name} is a qualified name ({@code a.b.C#m(int)}) or a simple one; a simple
+     * name with several declarations lists them, which is the choice to make before one can be shown.
+     */
+    private static int show(Index index, String name, PrintStream out, PrintStream err) {
+        List<Symbol> found = index.symbols().stream().filter(s -> s.qualified().equals(name)).toList();
+        if (found.isEmpty()) found = index.symbols().stream().filter(s -> s.name().equals(name)).toList();
+        if (found.isEmpty()) {
+            err.println("nothing is declared as " + name);
+            return 1;
+        }
+        if (found.size() > 1) {
+            out.println(name + " has " + found.size() + " declarations; show one by its qualified name:");
+            found.forEach(s -> out.println("    " + pad(s.kind().name(), 13) + " " + s.qualified()));
+            return 0;
+        }
+        Symbol symbol = found.getFirst();
+        try {
+            SourceRef at = symbol.source().locate(symbol);
+            List<String> lines = symbol.source().text().lines().toList();
+            String how = symbol.source() instanceof Source.Decompiled ? " (decompiled, read-only)"
+                    : symbol.source().readOnly() ? " (read-only)" : "";
+            out.println("== " + at + how);
+            for (int n = Math.max(1, at.line() - 2); n <= Math.min(lines.size(), at.line() + 15); n++) {
+                out.printf("%s%5d  %s%n", n == at.line() ? ">" : " ", n, lines.get(n - 1));
+            }
+            return 0;
+        } catch (IOException e) {
+            err.println("cannot show " + symbol.qualified() + ": " + e.getMessage());
+            return 1;
+        }
+    }
+
     /** The libraries the project's main source can name, nearest first, and what could not be resolved. */
     private static int deps(MavenProject project, PrintStream out) throws IOException {
         long started = System.nanoTime();
@@ -280,12 +323,15 @@ public final class Concordance {
                   impls   <type> [method]     types implementing a type, or methods implementing its method
                   search  <fragment>          like names, but staged as an editor searches: open files
                                               (--recent), the project, libraries it links to, the rest
+                  show    <name>              the text around a declaration, decompiled when its library
+                                              has no sources; a name with several declarations lists them
                   deps                        the libraries main source can name, nearest first, from the
                                               local repository, and what could not be resolved
 
                   --recent <file>             a file open in the editor, searched first; repeatable,
                                               most recent first
-                  --libraries                 also index the sources jars of every resolved library
+                  --libraries                 also index every resolved library: its sources jar, or
+                                              failing that its class files, shown decompiled
                   --sources <jar>             also index a library's sources jar; repeatable. A library
                                               contributes what it exports -- public and protected types
                                               and members -- and no references.

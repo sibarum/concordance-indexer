@@ -46,6 +46,10 @@
         <!-- JavaParser 3.28.2 parses Java 25 completely; we drive it at LanguageLevel.RAW so nothing reflects.
              See docs/javaparser-evaluation.md for why, and for why its symbol solver is test-scope only. -->
         <javaparser.version>3.28.2</javaparser.version>
+        <!-- Vineflower 1.12.0 decompiles a library class for display when its jar has no sources. It never runs the
+             code it reads, has no dependencies, and finds its plugins without ServiceLoader. Only display goes
+             through it: what a class declares is read from the class file itself, by java.lang.classfile. -->
+        <vineflower.version>1.12.0</vineflower.version>
         <junit.version>5.11.4</junit.version>
     </properties>
 
@@ -77,6 +81,11 @@
                 <groupId>com.github.javaparser</groupId>
                 <artifactId>javaparser-core</artifactId>
                 <version>${javaparser.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.vineflower</groupId>
+                <artifactId>vineflower</artifactId>
+                <version>${vineflower.version}</version>
             </dependency>
             <!-- Test scope only, and deliberately so: the symbol solver is a 99.5%-accurate oracle to
                  differential-test our own resolution against, and cannot cross native-image. -->
