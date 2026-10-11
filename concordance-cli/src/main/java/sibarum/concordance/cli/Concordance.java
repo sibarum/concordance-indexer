@@ -42,6 +42,7 @@ import java.util.Map;
  * concordance <project> show <name>
  * concordance <project> search <fragment> [--recent <file> ...]
  * concordance <project> <query> [args] [--libraries] [--sources <jar> ...]
+ * concordance cache [prune <size>] [--jar-cache <dir>]
  * }</pre>
  *
  * <p>Output is one result per line, {@code path:line} first, so it pipes into anything that opens files —
@@ -65,6 +66,7 @@ public final class Concordance {
         List<Path> recent = new ArrayList<>();
         boolean libraries = false;
         boolean jarCache = true;
+        Path jarCacheDir = null;
         for (int i = 0; i < given.length; i++) {
             if (given[i].equals("--sources")) {
                 if (++i == given.length) return missing(err, "--sources", "<jar>");
@@ -72,6 +74,9 @@ public final class Concordance {
             } else if (given[i].equals("--recent")) {
                 if (++i == given.length) return missing(err, "--recent", "<file>");
                 recent.add(Path.of(given[i]));
+            } else if (given[i].equals("--jar-cache")) {
+                if (++i == given.length) return missing(err, "--jar-cache", "<dir>");
+                jarCacheDir = Path.of(given[i]);
             } else if (given[i].equals("--no-jar-cache")) {
                 jarCache = false;
             } else if (given[i].equals("--libraries")) {
@@ -81,6 +86,11 @@ public final class Concordance {
             }
         }
         String[] args = positional.toArray(String[]::new);
+        JarCache cache = jarCacheDir != null ? JarCache.at(jarCacheDir) : JarCache.defaultLocation();
+        // "cache" alone, or followed by one of its own words, is the cache; otherwise it is a project directory.
+        if (args.length >= 1 && args[0].equals("cache") && (args.length == 1 || args[1].equals("prune"))) {
+            return cache(cache, args, out, err);
+        }
         if (args.length < 2) {
             usage(err);
             return 2;
@@ -107,7 +117,7 @@ public final class Concordance {
                 classpath.problems().forEach(p -> err.println("! " + p));
             }
             built = ProjectIndex.empty(project.rootDir());
-            if (jarCache) built.useJarCache(JarCache.defaultLocation());
+            if (jarCache) built.useJarCache(cache);
             changes = built.synchronize(project.javaFiles(), jars, classJars);
             built.problems().forEach(p -> err.println("! " + p));
             index = built.index();
@@ -265,6 +275,67 @@ public final class Concordance {
         }
     }
 
+    /**
+     * The jar cache: where it is and how much it holds, or, with {@code prune <size>}, trimmed to that size by
+     * dropping the least recently used jars first. A pruned jar is simply indexed again the next time a project
+     * needs it.
+     */
+    private static int cache(JarCache cache, String[] args, PrintStream out, PrintStream err) {
+        try {
+            if (args.length == 1) {
+                out.println(cache.dir() + ": " + cache.count() + " jars, " + bytes(cache.sizeBytes()));
+                return 0;
+            }
+            if (args.length < 3) return missing(err, "cache prune", "<size>, such as 500M, 2G or 0");
+            long limit;
+            try {
+                limit = parseSize(args[2]);
+            } catch (IllegalArgumentException e) {
+                err.println("cache prune: " + e.getMessage());
+                return 2;
+            }
+            int before = cache.count();
+            long sizeBefore = cache.sizeBytes();
+            int pruned = cache.prune(limit);
+            out.println("pruned " + pruned + " of " + before + " jars, " + bytes(sizeBefore) + " to "
+                    + bytes(cache.sizeBytes()) + ", least recently used first (" + cache.dir() + ")");
+            return 0;
+        } catch (IOException e) {
+            err.println("cannot read the jar cache at " + cache.dir() + ": " + e.getMessage());
+            return 1;
+        }
+    }
+
+    /** {@code 500M}, {@code 2G}, {@code 64K}, or plain bytes; binary units, case ignored. */
+    static long parseSize(String text) {
+        String t = text.trim().toUpperCase(java.util.Locale.ROOT);
+        if (t.endsWith("B")) t = t.substring(0, t.length() - 1);
+        long unit = 1;
+        if (!t.isEmpty()) {
+            switch (t.charAt(t.length() - 1)) {
+                case 'K' -> unit = 1L << 10;
+                case 'M' -> unit = 1L << 20;
+                case 'G' -> unit = 1L << 30;
+                default -> {}
+            }
+        }
+        String digits = unit == 1 ? t : t.substring(0, t.length() - 1);
+        try {
+            long n = Long.parseLong(digits.trim());
+            if (n < 0) throw new NumberFormatException();
+            return Math.multiplyExact(n, unit);
+        } catch (NumberFormatException | ArithmeticException e) {
+            throw new IllegalArgumentException("not a size: " + text + " (try 500M, 2G or 0)");
+        }
+    }
+
+    private static String bytes(long n) {
+        if (n < 1L << 10) return n + " bytes";
+        if (n < 1L << 20) return String.format(java.util.Locale.ROOT, "%.1f KB", n / 1024.0);
+        if (n < 1L << 30) return String.format(java.util.Locale.ROOT, "%.1f MB", n / (1024.0 * 1024));
+        return String.format(java.util.Locale.ROOT, "%.1f GB", n / (1024.0 * 1024 * 1024));
+    }
+
     /** The libraries the project's main source can name, nearest first, and what could not be resolved. */
     private static int deps(MavenProject project, PrintStream out) throws IOException {
         long started = System.nanoTime();
@@ -346,6 +417,14 @@ public final class Concordance {
                   --sources <jar>             also index a library's sources jar; repeatable. A library
                                               contributes what it exports -- public and protected types
                                               and members -- and no references.
+
+                  --jar-cache <dir>           use this jar cache rather than the default
+
+                concordance cache [prune <size>]
+
+                  (alone)                     where the jar cache is, how many jars it holds, its size
+                  prune   <size>              trim it to <size> (500M, 2G, 0), least recently used first;
+                                              a pruned jar is indexed again when a project next needs it
 
                 <project> is a directory holding a pom.xml, or the pom.xml itself.
 

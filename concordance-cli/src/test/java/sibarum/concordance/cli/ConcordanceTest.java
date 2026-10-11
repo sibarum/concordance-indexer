@@ -141,6 +141,81 @@ class ConcordanceTest {
         assertTrue(result.out().contains("-- 1 names (4 declarations) answering area, in 2 stages"), result.out());
     }
 
+    // --- the jar cache -------------------------------------------------------------------------
+
+    /** The CLI with these exact arguments, no project in front: what {@code concordance cache ...} is. */
+    private static Run bare(String... args) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        int code = Concordance.run(args,
+                new PrintStream(out, true, StandardCharsets.UTF_8),
+                new PrintStream(err, true, StandardCharsets.UTF_8));
+        return new Run(code, out.toString(StandardCharsets.UTF_8), err.toString(StandardCharsets.UTF_8));
+    }
+
+    private static Path polygonJar(Path repo) throws IOException {
+        Path jar = repo.resolve("shapes-sources.jar");
+        try (var zip = new java.util.zip.ZipOutputStream(Files.newOutputStream(jar))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("lib/Polygon.java"));
+            zip.write("package lib; public class Polygon { public double area() { return 0; } }"
+                    .getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        return jar;
+    }
+
+    @Test
+    void cacheSaysWhereItIsAndWhatItHolds(@TempDir Path cache) {
+        Run result = bare("cache", "--jar-cache", cache.toString());
+        assertEquals(0, result.code(), result.err());
+        assertTrue(result.out().contains(cache.toAbsolutePath().normalize() + ": 0 jars, 0 bytes"), result.out());
+    }
+
+    @Test
+    void cachePruneTrimsWhatIndexingStored(@TempDir Path dir, @TempDir Path repo, @TempDir Path cache)
+            throws IOException {
+        Path jar = polygonJar(repo);
+        Run indexed = run(project(dir), "summary", "--sources", jar.toString(), "--jar-cache", cache.toString());
+        assertEquals(0, indexed.code(), indexed.err());
+        assertTrue(bare("cache", "--jar-cache", cache.toString()).out().contains(": 1 jars, "));
+        assertTrue(run(dir, "summary", "--sources", jar.toString(), "--jar-cache", cache.toString())
+                .out().contains("(1 from the jar cache)"), "the second index loads it");
+
+        Run pruned = bare("cache", "prune", "0", "--jar-cache", cache.toString());
+        assertEquals(0, pruned.code(), pruned.err());
+        assertTrue(pruned.out().startsWith("pruned 1 of 1 jars, "), pruned.out());
+        assertTrue(bare("cache", "--jar-cache", cache.toString()).out().contains(": 0 jars, 0 bytes"));
+    }
+
+    @Test
+    void cachePruneToARoomySizeKeepsEverything(@TempDir Path dir, @TempDir Path repo, @TempDir Path cache)
+            throws IOException {
+        run(project(dir), "summary", "--sources", polygonJar(repo).toString(), "--jar-cache", cache.toString());
+        Run pruned = bare("cache", "prune", "1G", "--jar-cache", cache.toString());
+        assertTrue(pruned.out().startsWith("pruned 0 of 1 jars, "), pruned.out());
+    }
+
+    @Test
+    void cachePruneNeedsASizeItCanRead(@TempDir Path cache) {
+        Run none = bare("cache", "prune", "--jar-cache", cache.toString());
+        assertEquals(2, none.code());
+        assertTrue(none.err().contains("<size>"), none.err());
+        Run nonsense = bare("cache", "prune", "lots", "--jar-cache", cache.toString());
+        assertEquals(2, nonsense.code());
+        assertTrue(nonsense.err().contains("not a size: lots"), nonsense.err());
+    }
+
+    @Test
+    void sizesReadAsPeopleWriteThem() {
+        assertEquals(500L << 20, Concordance.parseSize("500M"));
+        assertEquals(2L << 30, Concordance.parseSize("2g"));
+        assertEquals(64L << 10, Concordance.parseSize("64KB"));
+        assertEquals(0, Concordance.parseSize("0"));
+        assertEquals(1234, Concordance.parseSize("1234"));
+        assertThrows(IllegalArgumentException.class, () -> Concordance.parseSize("-1M"));
+        assertThrows(IllegalArgumentException.class, () -> Concordance.parseSize("9999999999G"));
+    }
+
     @Test
     void depsListsTheLibrariesAndSaysWhereFrom(@TempDir Path dir) throws IOException {
         Run result = run(project(dir), "deps");

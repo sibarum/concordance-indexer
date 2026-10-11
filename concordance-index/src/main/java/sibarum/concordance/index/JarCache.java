@@ -81,6 +81,11 @@ public final class JarCache {
         }
     }
 
+    /** How many jar indexes the cache holds. */
+    public int count() throws IOException {
+        return files().size();
+    }
+
     /** How much the cache holds on disk, in bytes. */
     public long sizeBytes() throws IOException {
         return files().stream().mapToLong(f -> f.toFile().length()).sum();
