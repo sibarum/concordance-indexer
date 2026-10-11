@@ -17,7 +17,7 @@ class ConcordanceTest {
     /** A tiny project on disk, because the CLI's job is to start from a directory. */
     private static Path project(Path dir) throws IOException {
         Files.writeString(dir.resolve("pom.xml"), """
-                <project><artifactId>demo</artifactId></project>
+                <project><groupId>demo</groupId><artifactId>demo</artifactId><version>1</version></project>
                 """);
         Path src = dir.resolve("src/main/java/demo");
         Files.createDirectories(src);
