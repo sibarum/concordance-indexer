@@ -188,7 +188,7 @@ final class Poms {
         }
         properties.put("project.basedir", file.getParent().toString());
         properties.put("basedir", file.getParent().toString());
-        settle(properties);
+        settle(properties, file);
 
         Coordinates coordinates = new Coordinates(
                 MavenProjectReader.interpolate(groupId, properties),
@@ -239,8 +239,11 @@ final class Poms {
         }
     }
 
-    /** Fills properties that refer to other properties, a few levels deep; a cycle is left unresolved. */
-    private static void settle(Map<String, String> properties) {
+    /**
+     * Fills properties that refer to other properties, a few levels deep; a cycle is left unresolved, and a
+     * property that grows past {@link MavenProjectReader#MAX_EXPANDED} is reported and left part expanded.
+     */
+    private void settle(Map<String, String> properties, Path file) {
         for (int pass = 0; pass < 8; pass++) {
             boolean moved = false;
             for (Map.Entry<String, String> p : properties.entrySet()) {
@@ -250,8 +253,14 @@ final class Poms {
                     moved = true;
                 }
             }
-            if (!moved) return;
+            if (!moved) break;
         }
+        properties.forEach((name, value) -> {
+            if (value.length() > MavenProjectReader.MAX_EXPANDED) {
+                problems.add("property " + name + " in " + file + " expands past "
+                        + MavenProjectReader.MAX_EXPANDED + " characters; it is left part expanded");
+            }
+        });
     }
 
     private static List<Declared> declared(Element dependencies, Map<String, String> properties, Path declaredIn) {

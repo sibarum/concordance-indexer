@@ -17,6 +17,8 @@ import sibarum.concordance.project.MavenProject;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -59,12 +61,17 @@ public final class IndexBuilder {
     }
 
     public static Index buildFiles(List<Path> files) throws IOException {
-        JavaParser parser = parser();
         List<Symbol> symbols = new ArrayList<>();
         List<Reference> references = new ArrayList<>();
-        for (Path file : files) {
-            Source source = new Source.OnDisk(file);
-            parser.parse(file).getResult().ifPresent(cu -> collect(cu, source, false, symbols, references));
+        try (ParseWorker worker = new ParseWorker(Limits.DEFAULT)) {
+            for (Path file : files) {
+                List<Symbol> fileSymbols = new ArrayList<>();
+                List<Reference> fileReferences = new ArrayList<>();
+                worker.collect(new Source.OnDisk(file), Files.readAllBytes(file), false, null,
+                        fileSymbols, fileReferences);
+                symbols.addAll(fileSymbols);
+                references.addAll(fileReferences);
+            }
         }
         return new Index(symbols, references);
     }
@@ -73,8 +80,10 @@ public final class IndexBuilder {
     public static Index buildSource(Path attributedTo, String source) {
         List<Symbol> symbols = new ArrayList<>();
         List<Reference> references = new ArrayList<>();
-        parser().parse(source).getResult()
-                .ifPresent(cu -> collect(cu, new Source.OnDisk(attributedTo), false, symbols, references));
+        try (ParseWorker worker = new ParseWorker(Limits.DEFAULT)) {
+            worker.collect(new Source.OnDisk(attributedTo), source.getBytes(StandardCharsets.UTF_8), false, null,
+                    symbols, references);
+        }
         return new Index(symbols, references);
     }
 

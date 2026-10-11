@@ -20,10 +20,17 @@ import java.util.Optional;
 /** XML, kept to the little that poms and {@code settings.xml} need. */
 final class Xml {
 
+    /** The largest pom or settings file read. The largest real poms are tens of kilobytes. */
+    static final long MAX_BYTES = 16L << 20;
+
     private Xml() {}
 
     /** The document element of {@code file}, or a {@link MavenProjectReader.BrokenReactorException} saying why not. */
     static Element parse(Path file) throws IOException {
+        if (Files.size(file) > MAX_BYTES) {
+            throw new MavenProjectReader.BrokenReactorException(
+                    "cannot read " + file + ": larger than " + MAX_BYTES + " bytes, which no pom needs to be");
+        }
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             // A pom is data from the tree being indexed, or from a repository, so it is not trusted: no external

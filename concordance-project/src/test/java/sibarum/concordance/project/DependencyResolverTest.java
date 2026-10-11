@@ -268,6 +268,42 @@ class DependencyResolverTest {
         assertTrue(cp.problems().stream().anyMatch(p -> p.contains("gone:gone:1")), cp.problems().toString());
     }
 
+    @Test
+    void propertiesThatMultiplyEachOtherAreCappedAndReported() throws IOException {
+        // Each level refers to the next eight times: fully expanded, p0 would be 8^12 characters.
+        StringBuilder props = new StringBuilder("<properties>");
+        for (int i = 0; i < 12; i++) {
+            props.append("<p").append(i).append(">").append(("${p" + (i + 1) + "}").repeat(8))
+                    .append("</p").append(i).append(">");
+        }
+        props.append("<p12>x</p12></properties>");
+        artifact("lib:a:1", true);
+        long started = System.nanoTime();
+        Classpath cp = resolve(project(props + "<dependencies>" + dep("lib:a:1") + "</dependencies>"));
+
+        assertTrue(System.nanoTime() - started < 10_000_000_000L, "bounded work, not an exponential one");
+        assertEquals(List.of("lib:a:1@1"), names(cp), "the rest of the pom still resolves");
+        assertTrue(cp.problems().stream().anyMatch(p -> p.contains("property p0") && p.contains("expands past")),
+                cp.problems().toString());
+    }
+
+    @Test
+    void anOversizedPomInTheRepositoryIsAProblemNotARead() throws IOException {
+        artifact("lib:a:1", true, dep("lib:huge:1"));
+        Coordinates huge = new Coordinates("lib", "huge", "1");
+        Files.createDirectories(repo().pom(huge).getParent());
+        try (var out = Files.newOutputStream(repo().pom(huge))) {
+            out.write("<project><!--".getBytes());
+            out.write(new byte[(int) Xml.MAX_BYTES]);
+        }
+        write(repo().file(huge, null, "jar"), "jar");
+        Classpath cp = resolve(depending(dep("lib:a:1")));
+
+        assertEquals(List.of("lib:a:1@1", "lib:huge:1@2"), names(cp));
+        assertTrue(cp.problems().stream().anyMatch(p -> p.contains("huge") && p.contains("larger than")),
+                cp.problems().toString());
+    }
+
     // --- the repository and versions ----------------------------------------------------------
 
     @Test

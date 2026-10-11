@@ -1,19 +1,21 @@
 package sibarum.concordance.index;
 
-import com.github.javaparser.JavaParser;
 import sibarum.concordance.project.MavenProject;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +23,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.zip.ZipFile;
 
 /**
  * An {@link Index} that remembers which file said what, so it can be brought up to date by reparsing only what
@@ -78,30 +80,36 @@ public final class ProjectIndex {
 
     /**
      * What one source contributed, and the stamp that says whether it still does. An archive entry has no
-     * modification time of its own, its archive's stands for it, so its {@code modified} is zero.
+     * modification time of its own, its archive's stands for it, so its {@code modified} is zero. A source that
+     * could not be indexed contributes nothing and says why in {@code problem}, which is empty otherwise.
      */
     record Entry(Source source, long size, long modified, byte[] digest,
-                 List<Symbol> symbols, List<Reference> references) {
+                 List<Symbol> symbols, List<Reference> references, String problem) {
 
         Entry {
             symbols = List.copyOf(symbols);
             references = List.copyOf(references);
+            problem = problem == null ? "" : problem;
         }
 
         Entry restamped(long size, long modified) {
-            return new Entry(source, size, modified, digest, symbols, references);
+            return new Entry(source, size, modified, digest, symbols, references, problem);
         }
     }
 
-    /** A sources jar, stamped as a whole, and what each of its {@code .java} entries contributed. */
-    record Archive(Path file, long size, long modified, byte[] digest, List<Entry> entries) {
+    /**
+     * A sources jar, stamped as a whole, what each of its {@code .java} entries contributed, and what went wrong
+     * with the jar as a whole: unreadable, or over a budget part way through.
+     */
+    record Archive(Path file, long size, long modified, byte[] digest, List<Entry> entries, List<String> problems) {
 
         Archive {
             entries = List.copyOf(entries);
+            problems = List.copyOf(problems);
         }
 
         Archive restamped(long size, long modified) {
-            return new Archive(file, size, modified, digest, entries);
+            return new Archive(file, size, modified, digest, entries, problems);
         }
     }
 
@@ -131,20 +139,27 @@ public final class ProjectIndex {
     }
 
     private final Path root;
+    private final Limits limits;
     private Map<Path, Entry> entries;
     private Map<Path, Archive> archives;
     private Index index;
     private Corpus corpus;
 
-    ProjectIndex(Path root, Map<Path, Entry> entries, Map<Path, Archive> archives) {
+    ProjectIndex(Path root, Map<Path, Entry> entries, Map<Path, Archive> archives, Limits limits) {
         this.root = normalize(root);
+        this.limits = limits;
         this.entries = new LinkedHashMap<>(entries);
         this.archives = new LinkedHashMap<>(archives);
     }
 
     /** An index of nothing yet, for a project rooted at {@code root}. Synchronize it to fill it. */
     public static ProjectIndex empty(Path root) {
-        return new ProjectIndex(root, Map.of(), Map.of());
+        return empty(root, Limits.DEFAULT);
+    }
+
+    /** An index of nothing yet, spending no more than {@code limits} on any one input. */
+    public static ProjectIndex empty(Path root, Limits limits) {
+        return new ProjectIndex(root, Map.of(), Map.of(), limits);
     }
 
     /** A fresh index of every main source file of a project. */
@@ -164,7 +179,12 @@ public final class ProjectIndex {
      * @throws IOException only when the file exists and cannot be read
      */
     public static Optional<ProjectIndex> load(Path file, Path root) throws IOException {
-        return IndexCodec.read(file, normalize(root));
+        return load(file, root, Limits.DEFAULT);
+    }
+
+    /** As {@link #load(Path, Path)}, for an index that goes on to spend no more than {@code limits} per input. */
+    public static Optional<ProjectIndex> load(Path file, Path root, Limits limits) throws IOException {
+        return IndexCodec.read(file, normalize(root), limits);
     }
 
     /**
@@ -187,6 +207,25 @@ public final class ProjectIndex {
     /** The sources jars this index holds, in index order. */
     public List<Path> archives() {
         return List.copyOf(archives.keySet());
+    }
+
+    /**
+     * What could not be indexed, one sentence each, naming the source: a file nested too deeply to parse, a jar
+     * entry over the size limit, a jar that is not a readable zip. Each such input contributes nothing, and
+     * everything else is indexed as usual.
+     */
+    public List<String> problems() {
+        List<String> out = new ArrayList<>();
+        for (Entry entry : entries.values()) {
+            if (!entry.problem().isEmpty()) out.add(entry.source() + ": " + entry.problem());
+        }
+        for (Archive archive : archives.values()) {
+            archive.problems().forEach(p -> out.add(archive.file() + ": " + p));
+            for (Entry entry : archive.entries()) {
+                if (!entry.problem().isEmpty()) out.add(entry.source() + ": " + entry.problem());
+            }
+        }
+        return out;
     }
 
     /** The index as it stands after the last synchronize. Cheap to call again when nothing has changed. */
@@ -229,20 +268,22 @@ public final class ProjectIndex {
      * exists.
      */
     public Changes synchronize(Collection<Path> files, Collection<Path> sourcesJars) throws IOException {
-        Sync sync = new Sync(System.currentTimeMillis());
         Map<Path, Entry> nextEntries = new LinkedHashMap<>();
-        for (Path given : files) {
-            Path file = normalize(given);
-            if (nextEntries.containsKey(file)) continue;
-            Entry entry = sync.file(file, entries.get(file));
-            if (entry != null) nextEntries.put(file, entry);
-        }
         Map<Path, Archive> nextArchives = new LinkedHashMap<>();
-        for (Path given : sourcesJars) {
-            Path jar = normalize(given);
-            if (nextArchives.containsKey(jar)) continue;
-            Archive archive = sync.archive(jar, archives.get(jar));
-            if (archive != null) nextArchives.put(jar, archive);
+        Sync sync = new Sync(System.currentTimeMillis(), limits);
+        try (sync) {
+            for (Path given : files) {
+                Path file = normalize(given);
+                if (nextEntries.containsKey(file)) continue;
+                Entry entry = sync.file(file, entries.get(file));
+                if (entry != null) nextEntries.put(file, entry);
+            }
+            for (Path given : sourcesJars) {
+                Path jar = normalize(given);
+                if (nextArchives.containsKey(jar)) continue;
+                Archive archive = sync.archive(jar, archives.get(jar));
+                if (archive != null) nextArchives.put(jar, archive);
+            }
         }
 
         List<Path> removed = new ArrayList<>();
@@ -259,26 +300,37 @@ public final class ProjectIndex {
         return new Changes(sync.added, sync.changed, removed, sync.unchanged);
     }
 
-    /** One synchronize's worth of bookkeeping: the parser, made only if something needs parsing, and the tally. */
-    private static final class Sync {
+    /**
+     * One synchronize's worth of bookkeeping: the parse thread, started only if something needs parsing, and the
+     * tally.
+     */
+    private static final class Sync implements AutoCloseable {
         final long startedAt;
+        final Limits limits;
         final List<Path> added = new ArrayList<>();
         final List<Path> changed = new ArrayList<>();
         int unchanged;
-        private JavaParser parser;
+        private ParseWorker worker;
 
-        Sync(long startedAt) {
+        Sync(long startedAt, Limits limits) {
             this.startedAt = startedAt;
+            this.limits = limits;
         }
 
-        JavaParser parser() {
-            if (parser == null) parser = IndexBuilder.parser();
-            return parser;
+        ParseWorker worker() {
+            if (worker == null) worker = new ParseWorker(limits);
+            return worker;
+        }
+
+        @Override
+        public void close() {
+            if (worker != null) worker.close();
         }
 
         /** The file's entry as it stands now, or null when it no longer exists. */
         Entry file(Path file, Entry old) throws IOException {
-            Read read = read(file, old == null ? null : new Stamp(old.size(), old.modified(), old.digest()));
+            Read read = read(file, old == null ? null : new Stamp(old.size(), old.modified(), old.digest()), true);
+            Source source = new Source.OnDisk(file);
             switch (read) {
                 case null -> { return null; }
                 case Read.Untouched u -> {
@@ -289,20 +341,23 @@ public final class ProjectIndex {
                     unchanged++;
                     return old.restamped(size, modified);
                 }
+                case Read.TooLarge(long size, long modified) -> {
+                    (old == null ? added : changed).add(file);
+                    return new Entry(source, size, modified, new byte[0], List.of(), List.of(), tooLarge(size));
+                }
                 case Read.Fresh(byte[] bytes, long modified, byte[] digest) -> {
                     List<Symbol> symbols = new ArrayList<>();
                     List<Reference> references = new ArrayList<>();
-                    Source source = new Source.OnDisk(file);
-                    IndexBuilder.collectBytes(parser(), source, bytes, symbols, references);
+                    String problem = worker().collect(source, bytes, false, null, symbols, references);
                     (old == null ? added : changed).add(file);
-                    return new Entry(source, bytes.length, modified, digest, symbols, references);
+                    return new Entry(source, bytes.length, modified, digest, symbols, references, problem);
                 }
             }
         }
 
         /** The jar's archive as it stands now, or null when it no longer exists. */
         Archive archive(Path jar, Archive old) throws IOException {
-            Read read = read(jar, old == null ? null : new Stamp(old.size(), old.modified(), old.digest()));
+            Read read = read(jar, old == null ? null : new Stamp(old.size(), old.modified(), old.digest()), false);
             switch (read) {
                 case null -> { return null; }
                 case Read.Untouched u -> {
@@ -313,9 +368,19 @@ public final class ProjectIndex {
                     unchanged++;
                     return old.restamped(size, modified);
                 }
-                case Read.Fresh(byte[] bytes, long modified, byte[] digest) -> {
+                case Read.TooLarge t -> throw new IllegalStateException("a jar is hashed as a stream, never held");
+                case Read.Fresh(byte[] unread, long modified, byte[] digest) -> {
                     (old == null ? added : changed).add(jar);
-                    return new Archive(jar, bytes.length, modified, digest, entriesOf(jar, bytes, old));
+                    List<String> problems = new ArrayList<>();
+                    List<Entry> entries;
+                    try {
+                        entries = entriesOf(jar, old, problems);
+                    } catch (IOException unreadable) {
+                        // A jar the zip reader refuses is a problem of that jar, not of the synchronize.
+                        problems.add("not a readable zip: " + unreadable.getMessage());
+                        entries = List.of();
+                    }
+                    return new Archive(jar, Files.size(jar), modified, digest, entries, problems);
                 }
             }
         }
@@ -324,50 +389,88 @@ public final class ProjectIndex {
          * Every {@code .java} entry of a jar, by name, reusing what {@code old} knew of any whose content is the
          * same — unless {@code module-info.java} changed, since that can change what every other entry exports.
          * {@code META-INF} is skipped: what it holds is versioned copies of the entries outside it, or not Java.
+         *
+         * <p>Entries are found through the jar's central directory, as {@link Source.InArchive#read} finds them
+         * again: a jar whose local headers tell a different story from its directory cannot show one text to the
+         * index and another to the reader.
          */
-        private List<Entry> entriesOf(Path jar, byte[] bytes, Archive old) throws IOException {
-            Map<String, byte[]> sources = new TreeMap<>();
-            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
-                for (ZipEntry e = zip.getNextEntry(); e != null; e = zip.getNextEntry()) {
+        private List<Entry> entriesOf(Path jar, Archive old, List<String> problems) throws IOException {
+            try (ZipFile zip = new ZipFile(jar.toFile())) {
+                Map<String, ZipEntry> named = new TreeMap<>();
+                for (Enumeration<? extends ZipEntry> all = zip.entries(); all.hasMoreElements(); ) {
+                    ZipEntry e = all.nextElement();
                     String name = e.getName();
                     if (e.isDirectory() || !name.endsWith(".java") || name.startsWith("META-INF/")) continue;
-                    sources.putIfAbsent(name, zip.readAllBytes());
+                    named.putIfAbsent(name, e);
                 }
-            }
-
-            Map<String, Entry> known = new LinkedHashMap<>();
-            if (old != null) {
-                old.entries().forEach(e -> known.put(((Source.InArchive) e.source()).entry(), e));
-            }
-            byte[] moduleInfo = sources.get(MODULE_INFO);
-            Entry oldModuleInfo = known.get(MODULE_INFO);
-            boolean exportsSame = moduleInfo == null
-                    ? oldModuleInfo == null
-                    : oldModuleInfo != null && Arrays.equals(oldModuleInfo.digest(), digest(moduleInfo));
-            Set<String> exported = moduleInfo == null ? null : IndexBuilder.exportsOf(parser(), moduleInfo);
-
-            List<Entry> out = new ArrayList<>();
-            for (Map.Entry<String, byte[]> source : sources.entrySet()) {
-                byte[] content = source.getValue();
-                byte[] digest = digest(content);
-                Entry was = known.get(source.getKey());
-                if (exportsSame && was != null && Arrays.equals(was.digest(), digest)) {
-                    out.add(was);
-                    continue;
+                if (named.size() > limits.maxArchiveEntries()) {
+                    problems.add("has " + named.size() + " Java entries; only the first " + limits.maxArchiveEntries()
+                            + " by name are indexed");
                 }
-                Source at = new Source.InArchive(jar, source.getKey());
-                List<Symbol> symbols = new ArrayList<>();
-                IndexBuilder.collectExports(parser(), at, content, exported, symbols);
-                out.add(new Entry(at, content.length, 0, digest, symbols, List.of()));
+
+                Map<String, Entry> known = new LinkedHashMap<>();
+                if (old != null) {
+                    old.entries().forEach(e -> known.put(((Source.InArchive) e.source()).entry(), e));
+                }
+                long[] budget = {limits.maxArchiveSourceBytes()};
+                byte[] moduleInfo = named.containsKey(MODULE_INFO) ? take(zip, named.get(MODULE_INFO), budget) : null;
+                Entry oldModuleInfo = known.get(MODULE_INFO);
+                boolean exportsSame = moduleInfo == null
+                        ? oldModuleInfo == null
+                        : oldModuleInfo != null && Arrays.equals(oldModuleInfo.digest(), digest(moduleInfo));
+                Set<String> exported = moduleInfo == null ? null : worker().exportsOf(moduleInfo);
+
+                List<Entry> out = new ArrayList<>();
+                for (Map.Entry<String, ZipEntry> each : named.entrySet()) {
+                    if (out.size() == limits.maxArchiveEntries()) break;
+                    String name = each.getKey();
+                    Source at = new Source.InArchive(jar, name);
+                    boolean budgetBinds = budget[0] < limits.maxSourceBytes();
+                    byte[] content = name.equals(MODULE_INFO) ? moduleInfo : take(zip, each.getValue(), budget);
+                    if (content == null && budgetBinds) {
+                        problems.add("holds more than " + limits.maxArchiveSourceBytes()
+                                + " bytes of source; entries from " + name + " on are not indexed");
+                        break;
+                    }
+                    if (content == null) {
+                        long claimed = each.getValue().getSize();
+                        out.add(new Entry(at, claimed, 0, new byte[0], List.of(), List.of(), tooLarge(claimed)));
+                        continue;
+                    }
+                    byte[] digest = digest(content);
+                    Entry was = known.get(name);
+                    if (exportsSame && was != null && Arrays.equals(was.digest(), digest)) {
+                        out.add(was);
+                        continue;
+                    }
+                    List<Symbol> symbols = new ArrayList<>();
+                    String problem = worker().collect(at, content, true, exported, symbols, List.of());
+                    out.add(new Entry(at, content.length, 0, digest, symbols, List.of(), problem));
+                }
+                return out;
             }
-            return out;
+        }
+
+        /** An entry's bytes within both the per-file limit and what is left of the jar's budget; null if over. */
+        private byte[] take(ZipFile zip, ZipEntry entry, long[] budget) throws IOException {
+            try (InputStream in = zip.getInputStream(entry)) {
+                byte[] bytes = ParseWorker.readBounded(in, Math.min(limits.maxSourceBytes(), budget[0]));
+                if (bytes != null) budget[0] -= bytes.length;
+                return bytes;
+            }
+        }
+
+        private String tooLarge(long size) {
+            return "over the " + limits.maxSourceBytes() + "-byte limit for one source"
+                    + (size >= 0 ? " (" + size + " bytes)" : "") + ", so not indexed";
         }
 
         /**
-         * Whether a file has changed since it was stamped {@code old}: untouched by its stat, the same once read and
-         * hashed, or fresh content to parse. Null when there is no file.
+         * Whether a file has changed since it was stamped {@code old}: untouched by its stat, the same once read
+         * and hashed, too large to index, or fresh content to parse. Null when there is no file. A file read with
+         * {@code keep} false is hashed as a stream and never held whole, and its {@code Fresh} carries no bytes.
          */
-        private Read read(Path file, Stamp old) throws IOException {
+        private Read read(Path file, Stamp old, boolean keep) throws IOException {
             BasicFileAttributes stat;
             try {
                 stat = Files.readAttributes(file, BasicFileAttributes.class);
@@ -379,19 +482,30 @@ public final class ProjectIndex {
                     && old.size() == stat.size() && old.modified() == modified) {
                 return new Read.Untouched();
             }
-
-            byte[] bytes;
-            try {
-                bytes = Files.readAllBytes(file);
-            } catch (NoSuchFileException gone) {
-                return null;
-            }
             // Stamped with the stat taken before the read: if the file changed in between, the stamp is stale
             // and the next synchronize looks again, which errs the safe way.
             long stamp = modified >= startedAt - RACY_MILLIS ? UNTRUSTED : modified;
-            byte[] digest = digest(bytes);
+            if (keep && stat.size() > limits.maxSourceBytes()) {
+                return new Read.TooLarge(stat.size(), stamp);
+            }
+
+            byte[] bytes = null;
+            byte[] digest;
+            try {
+                if (keep) {
+                    try (InputStream in = Files.newInputStream(file)) {
+                        bytes = ParseWorker.readBounded(in, limits.maxSourceBytes());
+                    }
+                    if (bytes == null) return new Read.TooLarge(-1, stamp);   // grew past the limit since the stat
+                    digest = digest(bytes);
+                } else {
+                    digest = digestOf(file);
+                }
+            } catch (NoSuchFileException gone) {
+                return null;
+            }
             if (old != null && Arrays.equals(old.digest(), digest)) {
-                return new Read.Same(bytes.length, stamp);
+                return new Read.Same(bytes != null ? bytes.length : stat.size(), stamp);
             }
             return new Read.Fresh(bytes, stamp, digest);
         }
@@ -405,6 +519,8 @@ public final class ProjectIndex {
         record Untouched() implements Read {}
         /** Read and hashed, and the content is what it was; only the stamp moves. */
         record Same(long size, long modified) implements Read {}
+        /** Over {@link Limits#maxSourceBytes}: stamped, so it is not read again until it changes, and not indexed. */
+        record TooLarge(long size, long modified) implements Read {}
         record Fresh(byte[] bytes, long modified, byte[] digest) implements Read {}
     }
 
@@ -428,9 +544,22 @@ public final class ProjectIndex {
         return path.toAbsolutePath().normalize();
     }
 
+    /** SHA-256 of a file read as a stream, so a jar of any size costs a buffer, not its size in memory. */
+    static byte[] digestOf(Path file) throws IOException {
+        MessageDigest sha = sha256();
+        try (InputStream in = new DigestInputStream(Files.newInputStream(file), sha)) {
+            in.transferTo(OutputStream.nullOutputStream());
+        }
+        return sha.digest();
+    }
+
     static byte[] digest(byte[] bytes) {
+        return sha256().digest(bytes);
+    }
+
+    private static MessageDigest sha256() {
         try {
-            return MessageDigest.getInstance("SHA-256").digest(bytes);
+            return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("every Java platform is required to provide SHA-256", e);
         }

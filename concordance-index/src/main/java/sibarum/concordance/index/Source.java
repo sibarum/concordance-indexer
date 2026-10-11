@@ -34,7 +34,14 @@ public sealed interface Source {
 
         @Override
         public byte[] read() throws IOException {
-            return Files.readAllBytes(file);
+            try (InputStream in = Files.newInputStream(file)) {
+                byte[] bytes = ParseWorker.readBounded(in, Limits.DEFAULT.maxSourceBytes());
+                if (bytes == null) {
+                    throw new IOException(file + " is over the " + Limits.DEFAULT.maxSourceBytes()
+                            + "-byte limit for one source");
+                }
+                return bytes;
+            }
         }
 
         @Override
@@ -69,8 +76,15 @@ public sealed interface Source {
                 if (found == null) {
                     throw new NoSuchFileException(toString());
                 }
+                // Through the central directory and within the same limit as indexing, so what is read back is
+                // exactly what was indexed, and a zip bomb is no bigger here than it was there.
                 try (InputStream in = zip.getInputStream(found)) {
-                    return in.readAllBytes();
+                    byte[] bytes = ParseWorker.readBounded(in, Limits.DEFAULT.maxSourceBytes());
+                    if (bytes == null) {
+                        throw new IOException(this + " is over the " + Limits.DEFAULT.maxSourceBytes()
+                                + "-byte limit for one source");
+                    }
+                    return bytes;
                 }
             }
         }

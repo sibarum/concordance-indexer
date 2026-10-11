@@ -39,6 +39,7 @@ import java.util.stream.Collectors;
  *   int     archive count, then per sources jar:
  *             string  path, relative to the project root when it is under it
  *             stamp
+ *             int     problem count, then each problem string
  *             int     entry count, then per entry:
  *                       string entry name; stamp; body
  *
@@ -46,6 +47,7 @@ import java.util.stream.Collectors;
  *                     string kind, name, owner, qualified; int line, column; int super count, strings
  *           int     reference count, then per reference:
  *                     string kind, target, name, from; int line, column
+ *           string  why the source could not be indexed, or empty
  *   int     end marker
  * </pre>
  *
@@ -62,7 +64,7 @@ import java.util.stream.Collectors;
 final class IndexCodec {
 
     /** The byte layout above. Bump it whenever the layout, or any record written through it, changes shape. */
-    static final int FORMAT = 2;
+    static final int FORMAT = 3;
 
     private static final int MAGIC = 0x434E4344;       // "CNCD"
     private static final int END = 0x2F434E43;         // "/CNC"
@@ -99,6 +101,10 @@ final class IndexCodec {
         for (ProjectIndex.Archive archive : index.archiveEntries()) {
             writeRef(body, table, pathFor(index.root(), archive.file()));
             writeStamp(body, archive.size(), archive.modified(), archive.digest());
+            body.writeInt(archive.problems().size());
+            for (String problem : archive.problems()) {
+                writeRef(body, table, problem);
+            }
             body.writeInt(archive.entries().size());
             for (ProjectIndex.Entry entry : archive.entries()) {
                 writeRef(body, table, ((Source.InArchive) entry.source()).entry());
@@ -165,6 +171,7 @@ final class IndexCodec {
             out.writeInt(reference.at().line());
             out.writeInt(reference.at().column());
         }
+        writeRef(out, table, entry.problem());
     }
 
     /** Relative to the root with {@code /} between names when under it, so a moved checkout keeps its index. */
@@ -187,10 +194,14 @@ final class IndexCodec {
 
     // --- reading ------------------------------------------------------------------------------
 
-    static Optional<ProjectIndex> read(Path file, Path root) throws IOException {
+    static Optional<ProjectIndex> read(Path file, Path root, Limits limits) throws IOException {
         InputStream raw;
+        long maxCount;
         try {
             raw = Files.newInputStream(file);
+            // Every count below is of things at least a byte long, so none can honestly exceed the file's size:
+            // a count that does is not trusted with an allocation.
+            maxCount = Files.size(file);
         } catch (NoSuchFileException absent) {
             return Optional.empty();
         }
@@ -198,35 +209,40 @@ final class IndexCodec {
             if (in.readInt() != MAGIC) return Optional.empty();
             if (!fingerprint().equals(readString(in))) return Optional.empty();
 
-            String[] table = new String[count(in)];
+            String[] table = new String[count(in, maxCount)];
             for (int i = 0; i < table.length; i++) {
                 table[i] = readString(in);
             }
 
             Map<Path, ProjectIndex.Entry> entries = new LinkedHashMap<>();
-            int files = count(in);
+            int files = count(in, maxCount);
             for (int f = 0; f < files; f++) {
                 Path path = root.resolve(table[in.readInt()]).normalize();
-                entries.put(path, readEntry(in, table, new Source.OnDisk(path)));
+                entries.put(path, readEntry(in, maxCount, table, new Source.OnDisk(path)));
             }
 
             Map<Path, ProjectIndex.Archive> archives = new LinkedHashMap<>();
-            int jars = count(in);
+            int jars = count(in, maxCount);
             for (int j = 0; j < jars; j++) {
                 Path path = root.resolve(table[in.readInt()]).normalize();
                 long size = in.readLong();
                 long modified = in.readLong();
                 byte[] digest = readDigest(in);
-                List<ProjectIndex.Entry> inside = new ArrayList<>();
-                int entryCount = count(in);
-                for (int e = 0; e < entryCount; e++) {
-                    inside.add(readEntry(in, table, new Source.InArchive(path, table[in.readInt()])));
+                List<String> problems = new ArrayList<>();
+                int problemCount = count(in, maxCount);
+                for (int p = 0; p < problemCount; p++) {
+                    problems.add(table[in.readInt()]);
                 }
-                archives.put(path, new ProjectIndex.Archive(path, size, modified, digest, inside));
+                List<ProjectIndex.Entry> inside = new ArrayList<>();
+                int entryCount = count(in, maxCount);
+                for (int e = 0; e < entryCount; e++) {
+                    inside.add(readEntry(in, maxCount, table, new Source.InArchive(path, table[in.readInt()])));
+                }
+                archives.put(path, new ProjectIndex.Archive(path, size, modified, digest, inside, problems));
             }
 
             if (in.readInt() != END || in.read() != -1) return Optional.empty();
-            return Optional.of(new ProjectIndex(root, entries, archives));
+            return Optional.of(new ProjectIndex(root, entries, archives, limits));
         } catch (EOFException | RuntimeException notAnIndex) {
             // Truncated, or bytes that are not this format: a string index out of the table, a kind that does
             // not exist, a negative count. Either way there is no index here to use.
@@ -235,13 +251,14 @@ final class IndexCodec {
     }
 
     /** One source's stamp and body, its positions placed in {@code source}. */
-    private static ProjectIndex.Entry readEntry(DataInputStream in, String[] table, Source source) throws IOException {
+    private static ProjectIndex.Entry readEntry(DataInputStream in, long maxCount, String[] table, Source source)
+            throws IOException {
         long size = in.readLong();
         long modified = in.readLong();
         byte[] digest = readDigest(in);
 
         List<Symbol> symbols = new ArrayList<>();
-        int symbolCount = count(in);
+        int symbolCount = count(in, maxCount);
         for (int i = 0; i < symbolCount; i++) {
             Symbol.Kind kind = Symbol.Kind.valueOf(table[in.readInt()]);
             String name = table[in.readInt()];
@@ -249,7 +266,7 @@ final class IndexCodec {
             String qualified = table[in.readInt()];
             SourceRef at = new SourceRef(source, in.readInt(), in.readInt());
             List<String> supers = new ArrayList<>();
-            int superCount = count(in);
+            int superCount = count(in, maxCount);
             for (int s = 0; s < superCount; s++) {
                 supers.add(table[in.readInt()]);
             }
@@ -257,7 +274,7 @@ final class IndexCodec {
         }
 
         List<Reference> references = new ArrayList<>();
-        int referenceCount = count(in);
+        int referenceCount = count(in, maxCount);
         for (int i = 0; i < referenceCount; i++) {
             Reference.Kind kind = Reference.Kind.valueOf(table[in.readInt()]);
             String target = table[in.readInt()];
@@ -267,7 +284,8 @@ final class IndexCodec {
             references.add(new Reference(kind, target, name, from, at));
         }
 
-        return new ProjectIndex.Entry(source, size, modified, digest, symbols, references);
+        String problem = table[in.readInt()];
+        return new ProjectIndex.Entry(source, size, modified, digest, symbols, references, problem);
     }
 
     private static byte[] readDigest(DataInputStream in) throws IOException {
@@ -280,9 +298,9 @@ final class IndexCodec {
         return digest;
     }
 
-    private static int count(DataInputStream in) throws IOException {
+    private static int count(DataInputStream in, long max) throws IOException {
         int n = in.readInt();
-        if (n < 0) throw new IllegalArgumentException("negative count " + n);
+        if (n < 0 || n > max) throw new IllegalArgumentException("implausible count " + n);
         return n;
     }
 

@@ -54,6 +54,9 @@ public final class MavenProjectReader {
         public BrokenReactorException(String message, Throwable cause) { super(message, cause); }
     }
 
+    /** The longest a value may grow by interpolation; see {@link #interpolate}. */
+    static final int MAX_EXPANDED = 64 * 1024;
+
     private MavenProjectReader() {}
 
     /** Reads the reactor rooted at {@code pomOrDir}, which may be a {@code pom.xml} or the directory holding one. */
@@ -130,6 +133,10 @@ public final class MavenProjectReader {
     /**
      * Substitutes {@code ${name}} from {@code properties}. An unknown property is left as written rather than
      * blanked, so it shows up in a path or a module name instead of vanishing.
+     *
+     * <p>No result grows past {@link #MAX_EXPANDED} characters: a pom is input, and one whose properties refer to
+     * each other several times over would otherwise double with every expansion. Past the limit, the rest of the
+     * value is kept as written, so the {@code ${...}} still shows.
      */
     static String interpolate(String value, Map<String, String> properties) {
         if (value == null || value.indexOf("${") < 0) return value;
@@ -147,6 +154,10 @@ public final class MavenProjectReader {
                 break;
             }
             out.append(value, i, open);
+            if (out.length() > MAX_EXPANDED) {
+                out.append(value, open, value.length());
+                break;
+            }
             String name = value.substring(open + 2, close);
             String replacement = properties.get(name);
             out.append(replacement != null ? replacement : value.substring(open, close + 1));

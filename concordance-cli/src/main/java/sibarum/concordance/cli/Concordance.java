@@ -98,6 +98,7 @@ public final class Concordance {
             }
             built = ProjectIndex.empty(project.rootDir());
             built.synchronize(project.javaFiles(), jars);
+            built.problems().forEach(p -> err.println("! " + p));
             index = built.index();
         } catch (IOException e) {
             err.println("cannot index " + root + ": " + e.getMessage());
