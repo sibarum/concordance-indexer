@@ -138,7 +138,8 @@ public final class Concordance {
                 out.println(root + ": " + index.summary());
                 out.println("  " + project.modules().size() + " modules, " + files + " files, "
                         + jars.size() + " sources jars, " + classJars.size() + " class jars"
-                        + (changes.fromCache() > 0 ? " (" + changes.fromCache() + " from the jar cache)" : "")
+                        + (changes.fromCache() > 0 ? " (" + changes.fromCache() + " from the jar cache"
+                                + (changes.unhashed() > 0 ? ", " + changes.unhashed() + " without reading them" : "") + ")" : "")
                         + ", indexed in " + millis + " ms");
             }
             case "names" -> {

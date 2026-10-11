@@ -192,6 +192,85 @@ class JarCacheTest {
         assertEquals(0, cached());
     }
 
+    // --- the stamp shortcut --------------------------------------------------------------------
+
+    /** Pushes a file's modification time safely into the past, so a stamp of it is trusted. */
+    private static void settle(Path file) throws IOException {
+        Files.setLastModifiedTime(file, FileTime.from(Instant.now().minusSeconds(60)));
+    }
+
+    @Test
+    void aJarWhoseStatMatchesItsStampIsNotEvenRead() throws IOException {
+        Path jar = widgets(dir.resolve("repo/widgets.jar"));
+        settle(jar);
+        ProjectIndex first = project("one", cache());
+        first.synchronize(List.of(), List.of(jar));
+
+        // Same size, same modification time, different bytes: only a reader would notice.
+        FileTime stamp = Files.getLastModifiedTime(jar);
+        Files.write(jar, new byte[(int) Files.size(jar)]);
+        Files.setLastModifiedTime(jar, stamp);
+
+        ProjectIndex second = project("two", cache());
+        ProjectIndex.Changes changes = second.synchronize(List.of(), List.of(jar));
+        assertEquals(1, changes.fromCache(), changes.toString());
+        assertEquals(1, changes.unhashed(), "taken by its stamp: " + changes);
+        assertEquals(first.index().symbols().size(), second.index().symbols().size());
+        assertTrue(second.problems().isEmpty(), "the garbage was never read: " + second.problems());
+    }
+
+    @Test
+    void aJarWrittenTooRecentlyIsNotStampedSoItIsHashed() throws IOException {
+        Path jar = widgets(dir.resolve("repo/widgets.jar"));   // written just now: within the clock's resolution
+        project("one", cache()).synchronize(List.of(), List.of(jar));
+        ProjectIndex.Changes changes = project("two", cache()).synchronize(List.of(), List.of(jar));
+        assertEquals(1, changes.fromCache(), "found by its hash instead");
+        assertEquals(0, changes.unhashed());
+    }
+
+    @Test
+    void aJarWhoseStatMovedIsHashedAndFoundByItsBytes() throws IOException {
+        Path jar = widgets(dir.resolve("repo/widgets.jar"));
+        settle(jar);
+        project("one", cache()).synchronize(List.of(), List.of(jar));
+        Files.setLastModifiedTime(jar, FileTime.from(Instant.now().minusSeconds(120)));   // touched, not changed
+
+        ProjectIndex.Changes changes = project("two", cache()).synchronize(List.of(), List.of(jar));
+        assertEquals(1, changes.fromCache());
+        assertEquals(0, changes.unhashed(), "a stat that moved is not trusted; the bytes are");
+        ProjectIndex.Changes again = project("three", cache()).synchronize(List.of(), List.of(jar));
+        assertEquals(1, again.unhashed(), "and the new stat is stamped for next time");
+    }
+
+    @Test
+    void aStampIsForAPathNotForBytes() throws IOException {
+        Path original = widgets(dir.resolve("repo-a/widgets.jar"));
+        settle(original);
+        Path copy = dir.resolve("repo-b/widgets.jar");
+        Files.createDirectories(copy.getParent());
+        Files.copy(original, copy, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+        project("one", cache()).synchronize(List.of(), List.of(original));
+
+        ProjectIndex.Changes changes = project("two", cache()).synchronize(List.of(), List.of(copy));
+        assertEquals(1, changes.fromCache(), "the copy is the same entry, found by its hash");
+        assertEquals(0, changes.unhashed(), "but another path's stamp says nothing about this file");
+    }
+
+    @Test
+    void aStampWhoseEntryWasPrunedLeadsBackToTheJarAndPruningDropsIt() throws IOException {
+        Path jar = widgets(dir.resolve("repo/widgets.jar"));
+        settle(jar);
+        project("one", cache()).synchronize(List.of(), List.of(jar));
+        assertEquals(1, cache().prune(0));
+        try (Stream<Path> stamps = Files.list(dir.resolve("cache/stamps"))) {
+            assertEquals(0, stamps.count(), "a stamp for an entry that is gone is gone too");
+        }
+        ProjectIndex second = project("two", cache());
+        ProjectIndex.Changes changes = second.synchronize(List.of(), List.of(jar));
+        assertEquals(0, changes.fromCache());
+        assertFalse(second.index().namesContaining("Widget").isEmpty(), "read from the jar again");
+    }
+
     // --- size ----------------------------------------------------------------------------------
 
     @Test

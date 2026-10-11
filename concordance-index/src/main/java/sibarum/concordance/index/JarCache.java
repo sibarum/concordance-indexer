@@ -1,8 +1,11 @@
 package sibarum.concordance.index;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -26,7 +29,15 @@ import java.util.stream.Stream;
  * and are moved into place, so two processes caching the same jar at once cannot leave half a file. Everything
  * here is best-effort: a cache that cannot be read or written is a cache that missed, never a failed synchronize.
  *
- * <p>Nothing is evicted on its own; {@link #prune} trims to a size, least recently used first.
+ * <p>Finding the hash means reading the jar, so the cache also keeps a <em>stamp</em> per jar path: the size and
+ * modification time the jar had when it was last hashed, and the hash. A project meeting a jar whose path, size
+ * and modification time match a stamp takes the hash from it without reading the jar. A stamp is recorded only once
+ * the jar's modification time is safely in the past (see {@link ProjectIndex#RACY_MILLIS}), since a jar rewritten
+ * within the clock's resolution could keep its stat and change its bytes. A stamp only ever supplies a hash: if the
+ * entry it points to is gone, the jar is read and hashed as before.
+ *
+ * <p>Nothing is evicted on its own; {@link #prune} trims to a size, least recently used first, and drops the stamps
+ * of what it removed.
  */
 public final class JarCache {
 
@@ -81,6 +92,45 @@ public final class JarCache {
         }
     }
 
+    /**
+     * The hash of the jar at {@code jar} when it has exactly this size and modification time, as recorded by
+     * {@link #remember}; empty when no stamp matches all three.
+     */
+    Optional<byte[]> digestFor(Path jar, long size, long modified) {
+        try {
+            List<String> lines = Files.readAllLines(stampFor(jar));
+            if (lines.size() == 5 && lines.get(0).equals(STAMP_FORMAT) && lines.get(1).equals(key(jar))
+                    && lines.get(2).equals(Long.toString(size)) && lines.get(3).equals(Long.toString(modified))) {
+                return Optional.of(HexFormat.of().parseHex(lines.get(4)));
+            }
+        } catch (IOException | RuntimeException noStamp) {
+            // no stamp, or not one this reads: the jar is hashed
+        }
+        return Optional.empty();
+    }
+
+    /** Records that the jar at {@code jar}, at this size and modification time, hashes to {@code digest}. */
+    void remember(Path jar, long size, long modified, byte[] digest) {
+        Path stamp = stampFor(jar);
+        try {
+            Files.createDirectories(stamp.getParent());
+            Path partial = Files.createTempFile(stamp.getParent(), stamp.getFileName().toString(), ".partial");
+            try {
+                Files.write(partial, List.of(STAMP_FORMAT, key(jar), Long.toString(size), Long.toString(modified),
+                        HexFormat.of().formatHex(digest)));
+                try {
+                    Files.move(partial, stamp, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(partial, stamp, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(partial);
+            }
+        } catch (IOException | RuntimeException unwritable) {
+            // Without a stamp the jar is hashed next time, which is all a missing stamp costs.
+        }
+    }
+
     /** How many jar indexes the cache holds. */
     public int count() throws IOException {
         return files().size();
@@ -108,6 +158,7 @@ public final class JarCache {
                 deleted++;
             }
         }
+        if (deleted > 0) dropOrphanStamps();
         return deleted;
     }
 
@@ -117,6 +168,37 @@ public final class JarCache {
     }
 
     // ------------------------------------------------------------------------------------------
+
+    private static final String STAMP_FORMAT = "concordance-jar-stamp 1";
+
+    /** A stamp's file: named by a hash of the jar's path, so any path has a fixed, safe file name. */
+    private Path stampFor(Path jar) {
+        return dir.resolve("stamps").resolve(HexFormat.of().formatHex(
+                ProjectIndex.digest(key(jar).getBytes(StandardCharsets.UTF_8))));
+    }
+
+    private static String key(Path jar) {
+        return jar.toAbsolutePath().normalize().toString();
+    }
+
+    /** Stamps whose hash no longer has an entry, which pruning leaves behind. */
+    private void dropOrphanStamps() throws IOException {
+        Path stamps = dir.resolve("stamps");
+        if (!Files.isDirectory(stamps)) return;
+        try (Stream<Path> listing = Files.list(stamps)) {
+            for (Path stamp : listing.toList()) {
+                try {
+                    List<String> lines = Files.readAllLines(stamp);
+                    String hex = lines.size() == 5 ? lines.get(4) : "";
+                    if (!Files.exists(dir.resolve(hex + ".sources")) && !Files.exists(dir.resolve(hex + ".classes"))) {
+                        Files.deleteIfExists(stamp);
+                    }
+                } catch (IOException | RuntimeException unreadable) {
+                    Files.deleteIfExists(stamp);
+                }
+            }
+        }
+    }
 
     private Path fileFor(byte[] digest, boolean compiled) {
         return dir.resolve(HexFormat.of().formatHex(digest) + (compiled ? ".classes" : ".sources"));

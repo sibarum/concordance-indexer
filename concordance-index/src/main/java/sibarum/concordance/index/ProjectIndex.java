@@ -119,9 +119,11 @@ public final class ProjectIndex {
      * What a {@link #synchronize} found, by file and by jar: a jar is one item here however many entries it
      * holds. A file whose stat changed but whose content did not is unchanged: it was not reparsed, and nothing
      * in the index moved. {@code fromCache} counts the added or changed jars that were loaded from the
-     * {@link JarCache} rather than read.
+     * {@link JarCache} rather than read, and {@code unhashed} how many of those it recognised by a stamp, without
+     * reading the jar even to hash it.
      */
-    public record Changes(List<Path> added, List<Path> changed, List<Path> removed, int unchanged, int fromCache) {
+    public record Changes(List<Path> added, List<Path> changed, List<Path> removed, int unchanged, int fromCache,
+                          int unhashed) {
 
         public Changes {
             added = List.copyOf(added);
@@ -137,7 +139,8 @@ public final class ProjectIndex {
         @Override
         public String toString() {
             return added.size() + " added, " + changed.size() + " changed, " + removed.size() + " removed, "
-                    + unchanged + " unchanged" + (fromCache > 0 ? ", " + fromCache + " jars from the cache" : "");
+                    + unchanged + " unchanged" + (fromCache > 0 ? ", " + fromCache + " jars from the cache" : "")
+                    + (unhashed > 0 ? " (" + unhashed + " by their stamp)" : "");
         }
     }
 
@@ -327,7 +330,7 @@ public final class ProjectIndex {
             index = null;
             corpus = null;
         }
-        return new Changes(sync.added, sync.changed, removed, sync.unchanged, sync.fromCache);
+        return new Changes(sync.added, sync.changed, removed, sync.unchanged, sync.fromCache, sync.unhashed);
     }
 
     /**
@@ -341,6 +344,7 @@ public final class ProjectIndex {
         final List<Path> changed = new ArrayList<>();
         int unchanged;
         int fromCache;
+        int unhashed;
         final JarCache jarCache;
         private ParseWorker worker;
 
@@ -391,6 +395,10 @@ public final class ProjectIndex {
         /** The jar's archive, read for its sources or its classes, as it stands now; null if it no longer exists. */
         Archive archive(Path jar, Archive old, boolean compiled) throws IOException {
             if (old != null && old.compiled() != compiled) old = null;   // read the other way before: start over
+            if (jarCache != null) {
+                Archive stamped = fromStamp(jar, old, compiled);
+                if (stamped != null) return stamped;
+            }
             Read read = read(jar, old == null ? null : new Stamp(old.size(), old.modified(), old.digest()), false);
             switch (read) {
                 case null -> { return null; }
@@ -400,11 +408,15 @@ public final class ProjectIndex {
                 }
                 case Read.Same(long size, long modified) -> {
                     unchanged++;
+                    if (jarCache != null && modified != UNTRUSTED) jarCache.remember(jar, size, modified, old.digest());
                     return old.restamped(size, modified);
                 }
                 case Read.TooLarge t -> throw new IllegalStateException("a jar is hashed as a stream, never held");
                 case Read.Fresh(byte[] unread, long modified, byte[] digest) -> {
                     (old == null ? added : changed).add(jar);
+                    if (jarCache != null && modified != UNTRUSTED) {
+                        jarCache.remember(jar, Files.size(jar), modified, digest);
+                    }
                     if (jarCache != null) {
                         var cached = jarCache.load(digest, compiled, jar, limits);
                         if (cached.isPresent()) {
@@ -493,6 +505,37 @@ public final class ProjectIndex {
                 }
                 return out;
             }
+        }
+
+        /**
+         * The jar's archive taken from the cache by its stat alone — path, size, modification time — without reading
+         * the jar, even to hash it; null whenever the stamp cannot say, and the jar is then read as usual. A jar
+         * whose stat matches this index's own stamp is left to the usual path, which does not read it either.
+         */
+        private Archive fromStamp(Path jar, Archive old, boolean compiled) throws IOException {
+            BasicFileAttributes stat;
+            try {
+                stat = Files.readAttributes(jar, BasicFileAttributes.class);
+            } catch (NoSuchFileException gone) {
+                return null;
+            }
+            long modified = stat.lastModifiedTime().toMillis();
+            if (old != null && old.modified() != UNTRUSTED && old.size() == stat.size() && old.modified() == modified) {
+                return null;
+            }
+            Optional<byte[]> digest = jarCache.digestFor(jar, stat.size(), modified);
+            if (digest.isEmpty()) return null;
+            if (old != null && Arrays.equals(old.digest(), digest.get())) {
+                unchanged++;
+                return old.restamped(stat.size(), modified);
+            }
+            var cached = jarCache.load(digest.get(), compiled, jar, limits);
+            if (cached.isEmpty()) return null;   // pruned since: the stamp's hash leads nowhere, so read the jar
+            (old == null ? added : changed).add(jar);
+            fromCache++;
+            unhashed++;
+            return new Archive(jar, stat.size(), modified, digest.get(), cached.get().entries(),
+                    cached.get().problems(), compiled);
         }
 
         /**
