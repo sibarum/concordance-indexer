@@ -4,6 +4,10 @@ import sibarum.concordance.index.Index;
 import sibarum.concordance.index.ProjectIndex;
 import sibarum.concordance.index.Reference;
 import sibarum.concordance.index.Symbol;
+import sibarum.concordance.project.Classpath;
+import sibarum.concordance.project.Dependency;
+import sibarum.concordance.project.DependencyResolver;
+import sibarum.concordance.project.LocalRepository;
 import sibarum.concordance.project.MavenProject;
 import sibarum.concordance.project.MavenProjectReader;
 
@@ -21,7 +25,8 @@ import java.util.List;
  * concordance <project> usages <name>
  * concordance <project> impls <type> [method]
  * concordance <project> summary
- * concordance <project> <query> [args] --sources <jar> ...
+ * concordance <project> deps
+ * concordance <project> <query> [args] [--libraries] [--sources <jar> ...]
  * }</pre>
  *
  * <p>Output is one result per line, {@code path:line} first, so it pipes into anything that opens files —
@@ -38,13 +43,16 @@ public final class Concordance {
 
     /** Separated from {@link #main} so a test can drive it without exiting the JVM. */
     public static int run(String[] given, PrintStream out, PrintStream err) {
-        // --sources may appear anywhere after the project; everything else is positional.
+        // Flags may appear anywhere after the project; everything else is positional.
         List<String> positional = new ArrayList<>();
         List<Path> jars = new ArrayList<>();
+        boolean libraries = false;
         for (int i = 0; i < given.length; i++) {
             if (given[i].equals("--sources")) {
                 if (++i == given.length) return missing(err, "--sources", "<jar>");
                 jars.add(Path.of(given[i]));
+            } else if (given[i].equals("--libraries")) {
+                libraries = true;
             } else {
                 positional.add(given[i]);
             }
@@ -62,6 +70,14 @@ public final class Concordance {
         long started = System.nanoTime();
         try {
             project = MavenProjectReader.read(root);
+            if (command.equals("deps")) {
+                return deps(project, out);
+            }
+            if (libraries) {
+                Classpath classpath = DependencyResolver.resolve(project, LocalRepository.locate());
+                jars.addAll(classpath.sourcesJars());
+                classpath.problems().forEach(p -> err.println("! " + p));
+            }
             ProjectIndex built = ProjectIndex.empty(project.rootDir());
             built.synchronize(project.javaFiles(), jars);
             index = built.index();
@@ -115,6 +131,24 @@ public final class Concordance {
         return 0;
     }
 
+    /** The libraries the project's main source can name, nearest first, and what could not be resolved. */
+    private static int deps(MavenProject project, PrintStream out) throws IOException {
+        long started = System.nanoTime();
+        LocalRepository repository = LocalRepository.locate();
+        Classpath classpath = DependencyResolver.resolve(project, repository);
+        long millis = (System.nanoTime() - started) / 1_000_000;
+        for (Dependency d : classpath.dependencies()) {
+            out.println(d.depth() + "  " + pad(d.scope(), 9) + " " + pad(d.coordinates().toString()
+                    + (d.classifier().isEmpty() ? "" : ":" + d.classifier()), 60)
+                    + (d.sourcesJar() != null ? " sources" : d.jar() != null ? " jar only" : " missing"));
+        }
+        classpath.problems().forEach(p -> out.println("! " + p));
+        out.println("-- " + classpath.dependencies().size() + " libraries, " + classpath.sourcesJars().size()
+                + " with sources, " + classpath.problems().size() + " problems, from " + repository
+                + " (resolved in " + millis + " ms)");
+        return 0;
+    }
+
     private static String line(Symbol symbol) {
         return symbol.at()
                 + "  " + pad(symbol.kind().name(), 10)
@@ -143,7 +177,10 @@ public final class Concordance {
                   names   <fragment>          declarations whose name answers a fragment, best fit first
                   usages  <name>              where a name is used
                   impls   <type> [method]     types implementing a type, or methods implementing its method
+                  deps                        the libraries main source can name, nearest first, from the
+                                              local repository, and what could not be resolved
 
+                  --libraries                 also index the sources jars of every resolved library
                   --sources <jar>             also index a library's sources jar; repeatable. A library
                                               contributes what it exports -- public and protected types
                                               and members -- and no references.

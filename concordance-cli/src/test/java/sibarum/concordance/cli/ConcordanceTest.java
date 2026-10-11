@@ -119,6 +119,13 @@ class ConcordanceTest {
     }
 
     @Test
+    void depsListsTheLibrariesAndSaysWhereFrom(@TempDir Path dir) throws IOException {
+        Run result = run(project(dir), "deps");
+        assertEquals(0, result.code(), result.err());
+        assertTrue(result.out().contains("-- 0 libraries, 0 with sources, 0 problems, from "), result.out());
+    }
+
+    @Test
     void aSourcesFlagWithoutAJarSaysSo(@TempDir Path dir) throws IOException {
         Run result = run(project(dir), "summary", "--sources");
         assertEquals(2, result.code());

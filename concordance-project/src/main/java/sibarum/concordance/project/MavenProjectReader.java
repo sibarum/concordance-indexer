@@ -1,15 +1,7 @@
 package sibarum.concordance.project;
 
-import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.XMLConstants;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,8 +10,12 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
+
+import static sibarum.concordance.project.Xml.childElement;
+import static sibarum.concordance.project.Xml.childElements;
+import static sibarum.concordance.project.Xml.childText;
+import static sibarum.concordance.project.Xml.text;
 
 /**
  * Reads a Maven reactor by reading poms, not by asking Maven.
@@ -43,8 +39,8 @@ import java.util.Set;
  *
  * <p>Profiles are ignored, so a source root that only exists under an activated profile is missed. Parents are
  * inherited only <em>down the reactor</em>: a pom whose parent lives outside the tree (in the local repository,
- * say) does not get that parent's properties, because finding it would mean resolving a repository. Dependency
- * classpaths are not read at all yet; they matter for resolving types across jars, which is a later slice.
+ * say) does not get that parent's properties here. Dependency classpaths are not this class's business:
+ * {@link DependencyResolver} reads them, following {@code <parent>} properly into the local repository.
  *
  * <p>Each of those is a real gap rather than a simplification, and each will surface as a missing source root or
  * an uninterpolated {@code ${...}} rather than as silence — {@link #read} throws on a module directory that a pom
@@ -79,7 +75,7 @@ public final class MavenProjectReader {
             return;   // a pom reachable twice is read once; cycles cannot spin
         }
         Path baseDir = normalised.getParent();
-        Element project = parse(normalised);
+        Element project = Xml.parse(normalised);
 
         Map<String, String> properties = new LinkedHashMap<>(inheritedProperties);
         childElement(project, "properties").ifPresent(props -> {
@@ -129,49 +125,6 @@ public final class MavenProjectReader {
             }
             readInto(childPom, properties, out, visited);
         }
-    }
-
-    // --- xml, kept to the little that poms need -------------------------------------------------
-
-    private static Element parse(Path pom) throws IOException {
-        try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            // A pom is data from the tree being indexed, so it is not trusted: no external entities, no DTDs.
-            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-            factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            factory.setExpandEntityReferences(false);
-            factory.setNamespaceAware(false);   // poms use one namespace; ignoring it keeps tag names plain
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            try (var in = Files.newInputStream(pom)) {
-                Document doc = builder.parse(in);
-                return doc.getDocumentElement();
-            }
-        } catch (ParserConfigurationException | SAXException e) {
-            throw new BrokenReactorException("cannot read " + pom + ": " + e.getMessage(), e);
-        }
-    }
-
-    private static List<Element> childElements(Element parent) {
-        NodeList children = parent.getChildNodes();
-        List<Element> out = new ArrayList<>();
-        for (int i = 0; i < children.getLength(); i++) {
-            Node n = children.item(i);
-            if (n instanceof Element e) out.add(e);
-        }
-        return out;
-    }
-
-    private static Optional<Element> childElement(Element parent, String tag) {
-        return childElements(parent).stream().filter(e -> e.getTagName().equals(tag)).findFirst();
-    }
-
-    private static Optional<String> childText(Element parent, String tag) {
-        return childElement(parent, tag).map(MavenProjectReader::text).filter(s -> !s.isEmpty());
-    }
-
-    private static String text(Element e) {
-        return e.getTextContent() == null ? "" : e.getTextContent().trim();
     }
 
     /**
