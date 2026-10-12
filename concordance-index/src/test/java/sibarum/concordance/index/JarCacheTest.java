@@ -43,16 +43,22 @@ class JarCacheTest {
         return JarCache.at(dir.resolve("cache"));
     }
 
-    private ProjectIndex project(String name, JarCache cache) {
-        return ProjectIndex.empty(dir.resolve(name)).useJarCache(cache);
+    private ProjectIndex project(String name, JarCache cache) throws IOException {
+        return ProjectIndex.empty(Files.createDirectories(dir.resolve(name))).useJarCache(cache);
     }
 
     private long cached() throws IOException {
         Path c = dir.resolve("cache");
         if (!Files.isDirectory(c)) return 0;
         try (Stream<Path> files = Files.list(c)) {
-            return files.count();
+            return files.filter(JarCacheTest::isEntry).count();
         }
+    }
+
+    /** A jar index, as opposed to the cache's bookkeeping beside them. */
+    private static boolean isEntry(Path file) {
+        String name = file.getFileName().toString();
+        return name.endsWith(".sources") || name.endsWith(".classes");
     }
 
     // --- shared between projects ---------------------------------------------------------------
@@ -150,7 +156,7 @@ class JarCacheTest {
         ProjectIndex first = project("one", cache());
         first.synchronize(List.of(), List.of(jar));
         try (Stream<Path> files = Files.list(dir.resolve("cache"))) {
-            Path entry = files.findFirst().orElseThrow();
+            Path entry = files.filter(JarCacheTest::isEntry).findFirst().orElseThrow();
             Files.write(entry, "not an index".getBytes(StandardCharsets.UTF_8));
         }
         ProjectIndex second = project("two", cache());
@@ -287,5 +293,152 @@ class JarCacheTest {
         assertEquals(1, cache().prune(total - 1));
         assertEquals(0, project("three", cache()).synchronize(List.of(), List.of(old)).fromCache(), "old went");
         assertEquals(1, project("four", cache()).synchronize(List.of(), List.of(recent)).fromCache(), "recent stayed");
+    }
+
+    // --- rot -----------------------------------------------------------------------------------
+
+    /** A version of an artifact where a Maven repository keeps it, settled so it is stamped. */
+    private Path release(String version) throws IOException {
+        Path jar = jar(dir.resolve("repo/org/acme/gears/" + version + "/gears-" + version + ".jar"),
+                "lib/Gear.java", "package lib; public class Gear { public int v" + version.replace('.', '_') + "; }");
+        settle(jar);
+        return jar;
+    }
+
+    private JarCache.Indexed indexOf(Path jar) throws IOException {
+        return cache().indexes().stream().filter(i -> i.jars().contains(jar)).findFirst().orElseThrow();
+    }
+
+    private boolean isCached(Path jar) throws IOException {
+        return cache().indexes().stream().anyMatch(i -> i.jars().contains(jar));
+    }
+
+    /** Makes the index of {@code jar} look last built or loaded {@code days} ago. */
+    private void idle(Path jar, int days) throws IOException {
+        JarCache.Indexed index = indexOf(jar);
+        Files.setLastModifiedTime(dir.resolve("cache").resolve(index.digest() + ".sources"),
+                FileTime.from(Instant.now().minus(java.time.Duration.ofDays(days))));
+    }
+
+    @Test
+    void aNewBuildOfTheSameVersionDropsTheOldIndex() throws IOException {
+        Path jar = jar(dir.resolve("repo/org/acme/gears/1.0-SNAPSHOT/gears-1.0-SNAPSHOT.jar"),
+                "lib/Gear.java", "package lib; public class Gear {}");
+        settle(jar);
+        project("one", cache()).synchronize(List.of(), List.of(jar));
+        assertEquals(1, cached());
+
+        jar(jar, "lib/Gear.java", "package lib; public class Gear { public int teeth; }");   // installed again
+        Files.setLastModifiedTime(jar, FileTime.from(Instant.now().minusSeconds(30)));
+        project("one", cache()).synchronize(List.of(), List.of(jar));
+        assertEquals(1, cached(), "the old build's index went when the new one came");
+        assertEquals(1, project("two", cache()).synchronize(List.of(), List.of(jar)).fromCache(), "the new one is cached");
+    }
+
+    @Test
+    void anOldBuildStillHeldAtAnotherPathIsKept() throws IOException {
+        Path jar = jar(dir.resolve("repo/org/acme/gears/1.0-SNAPSHOT/gears-1.0-SNAPSHOT.jar"),
+                "lib/Gear.java", "package lib; public class Gear {}");
+        settle(jar);
+        Path copy = dir.resolve("elsewhere/gears.jar");
+        Files.createDirectories(copy.getParent());
+        Files.copy(jar, copy, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+        project("one", cache()).synchronize(List.of(), List.of(jar, copy));
+
+        jar(jar, "lib/Gear.java", "package lib; public class Gear { public int teeth; }");
+        Files.setLastModifiedTime(jar, FileTime.from(Instant.now().minusSeconds(30)));
+        project("one", cache()).synchronize(List.of(), List.of(jar, copy));
+        assertEquals(2, cached(), "the copy still holds the old bytes");
+    }
+
+    @Test
+    void anUnusedOutdatedIdleVersionIsSweptAndTheNewestNeverIs() throws IOException {
+        Path old = release("1.0");
+        Path current = release("2.0");
+        project("one", cache()).synchronize(List.of(), List.of(old));
+        project("one", cache()).synchronize(List.of(), List.of(current));   // moved on: nothing uses 1.0 now
+        idle(old, 4);
+        idle(current, 400);
+
+        assertTrue(indexOf(old).stale(Instant.now()));
+        assertFalse(indexOf(current).stale(Instant.now()), "nothing newer than 2.0 is cached");
+        assertEquals(1, cache().sweep(Instant.now()));
+        assertFalse(isCached(old));
+        assertTrue(isCached(current));
+    }
+
+    @Test
+    void anOutdatedVersionAProjectUsesIsKept() throws IOException {
+        Path old = release("1.0");
+        Path current = release("2.0");
+        project("one", cache()).synchronize(List.of(), List.of(old));
+        project("two", cache()).synchronize(List.of(), List.of(current));
+        idle(old, 30);
+
+        assertEquals(1, indexOf(old).projects());
+        assertTrue(indexOf(old).outdated());
+        assertEquals(0, cache().sweep(Instant.now()));
+    }
+
+    @Test
+    void anOutdatedVersionUsedRecentlyIsKept() throws IOException {
+        Path old = release("1.0");
+        Path current = release("2.0");
+        project("one", cache()).synchronize(List.of(), List.of(old));
+        project("one", cache()).synchronize(List.of(), List.of(current));
+        idle(old, 2);
+        assertEquals(0, cache().sweep(Instant.now()), "idle 2 days, not 3");
+        assertEquals(1, cache().sweep(Instant.now().plus(java.time.Duration.ofDays(2))));
+    }
+
+    @Test
+    void aJarOutsideARepositoryHasNoVersionAndIsNeverSwept() throws IOException {
+        Path loose = widgets(dir.resolve("lib/widgets.jar"));
+        settle(loose);
+        project("one", cache()).synchronize(List.of(), List.of(loose));
+        project("one", cache()).synchronize(List.of(), List.of());
+        idle(loose, 400);
+        assertFalse(indexOf(loose).outdated());
+        assertEquals(0, cache().sweep(Instant.now()));
+    }
+
+    @Test
+    void aSynchronizeSweepsWhenASweepIsDue() throws IOException {
+        Path old = release("1.0");
+        Path current = release("2.0");
+        project("one", cache()).synchronize(List.of(), List.of(old));
+        project("one", cache()).synchronize(List.of(), List.of(current));
+        idle(old, 4);
+        project("one", cache()).synchronize(List.of(), List.of(current));
+        assertTrue(isCached(old), "swept within the day already");
+
+        Files.setLastModifiedTime(dir.resolve("cache/swept"), FileTime.from(Instant.now().minus(java.time.Duration.ofDays(2))));
+        project("one", cache()).synchronize(List.of(), List.of(current));
+        assertFalse(isCached(old));
+    }
+
+    @Test
+    void anArtifactIsReadFromItsPlaceInARepository() {
+        Path base = Path.of("m2", "org", "acme", "gears");
+        var release = JarCache.artifactOf(base.resolve("1.0/gears-1.0.jar")).orElseThrow();
+        var sources = JarCache.artifactOf(base.resolve("1.0/gears-1.0-sources.jar")).orElseThrow();
+        var newer = JarCache.artifactOf(base.resolve("1.10/gears-1.10.jar")).orElseThrow();
+        var snapshot = JarCache.artifactOf(base.resolve("2.0-SNAPSHOT/gears-2.0-20261011.120000-3.jar")).orElseThrow();
+        assertTrue(release.olderThan(newer), "1.0 < 1.10, by Maven's ordering");
+        assertFalse(sources.olderThan(newer), "a sources jar is not a version of the main jar");
+        assertTrue(newer.olderThan(snapshot));
+        assertEquals("2.0-SNAPSHOT", snapshot.version());
+        assertTrue(JarCache.artifactOf(base.resolve("1.0/other-1.0.jar")).isEmpty());
+        assertTrue(JarCache.artifactOf(Path.of("lib", "gears.jar")).isEmpty());
+    }
+
+    @Test
+    void purgingEmptiesTheCache() throws IOException {
+        Path jar = release("1.0");
+        project("one", cache()).synchronize(List.of(), List.of(jar));
+        assertEquals(1, cache().purge());
+        assertEquals(0, cached());
+        assertEquals(0, cache().overheadBytes(), "stamps and project records went too");
+        assertEquals(0, project("two", cache()).synchronize(List.of(), List.of(jar)).fromCache());
     }
 }

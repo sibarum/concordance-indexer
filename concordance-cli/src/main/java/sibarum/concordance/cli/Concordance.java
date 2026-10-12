@@ -42,7 +42,7 @@ import java.util.Map;
  * concordance <project> show <name>
  * concordance <project> search <fragment> [--recent <file> ...]
  * concordance <project> <query> [args] [--libraries] [--sources <jar> ...]
- * concordance cache [prune <size>] [--jar-cache <dir>]
+ * concordance cache [list | purge | prune <size>] [--jar-cache <dir>]
  * }</pre>
  *
  * <p>Output is one result per line, {@code path:line} first, so it pipes into anything that opens files —
@@ -88,7 +88,8 @@ public final class Concordance {
         String[] args = positional.toArray(String[]::new);
         JarCache cache = jarCacheDir != null ? JarCache.at(jarCacheDir) : JarCache.defaultLocation();
         // "cache" alone, or followed by one of its own words, is the cache; otherwise it is a project directory.
-        if (args.length >= 1 && args[0].equals("cache") && (args.length == 1 || args[1].equals("prune"))) {
+        if (args.length >= 1 && args[0].equals("cache")
+                && (args.length == 1 || List.of("prune", "list", "purge").contains(args[1]))) {
             return cache(cache, args, out, err);
         }
         if (args.length < 2) {
@@ -277,14 +278,27 @@ public final class Concordance {
     }
 
     /**
-     * The jar cache: where it is and how much it holds, or, with {@code prune <size>}, trimmed to that size by
-     * dropping the least recently used jars first. A pruned jar is simply indexed again the next time a project
-     * needs it.
+     * The jar cache: where it is and how much it holds; with {@code list}, each jar index in it; with {@code purge},
+     * emptied; with {@code prune <size>}, trimmed to that size by dropping the least recently used jars first. A
+     * dropped jar is simply indexed again the next time a project needs it.
      */
     private static int cache(JarCache cache, String[] args, PrintStream out, PrintStream err) {
         try {
             if (args.length == 1) {
-                out.println(cache.dir() + ": " + cache.count() + " jars, " + bytes(cache.sizeBytes()));
+                long overhead = cache.overheadBytes();
+                long stale = cache.indexes().stream().filter(i -> i.stale(java.time.Instant.now())).count();
+                out.println(cache.dir() + ": " + cache.count() + " jars, " + bytes(cache.sizeBytes())
+                        + (overhead > 0 ? " (and " + bytes(overhead) + " of stamps and project records)" : "")
+                        + (stale > 0 ? ", " + stale + " stale" : ""));
+                return 0;
+            }
+            if (args[1].equals("list")) return cacheList(cache, out);
+            if (args[1].equals("purge")) {
+                int before = cache.count();
+                long sizeBefore = cache.sizeBytes() + cache.overheadBytes();
+                int purged = cache.purge();
+                out.println("purged " + purged + " of " + before + " jars, " + bytes(sizeBefore) + " ("
+                        + cache.dir() + ")");
                 return 0;
             }
             if (args.length < 3) return missing(err, "cache prune", "<size>, such as 500M, 2G or 0");
@@ -305,6 +319,32 @@ public final class Concordance {
             err.println("cannot read the jar cache at " + cache.dir() + ": " + e.getMessage());
             return 1;
         }
+    }
+
+    /**
+     * Every jar index in the cache, largest first: its size, when it was last built or loaded, how it was read, how
+     * many projects use it, whether a newer version of it is cached, and the jars known to hold its bytes.
+     */
+    private static int cacheList(JarCache cache, PrintStream out) throws IOException {
+        java.time.Instant now = java.time.Instant.now();
+        List<JarCache.Indexed> indexes = cache.indexes();
+        long total = 0;
+        int stale = 0;
+        for (JarCache.Indexed i : indexes) {
+            total += i.bytes();
+            if (i.stale(now)) stale++;
+            String used = java.time.LocalDate.ofInstant(i.lastUsed(), java.time.ZoneId.systemDefault()).toString();
+            String state = i.stale(now) ? "stale" : i.outdated() ? "outdated" : "";
+            String jars = i.jars().isEmpty() ? "(no jar known: " + i.digest().substring(0, 12) + ")"
+                    : i.jars().getFirst() + (i.jars().size() > 1 ? " and " + (i.jars().size() - 1) + " more" : "");
+            out.println(pad(bytes(i.bytes()), 10) + " " + used + "  " + pad(i.compiled() ? "classes" : "sources", 8)
+                    + " " + pad(i.projects() == 1 ? "1 project" : i.projects() + " projects", 11) + " "
+                    + pad(state, 8) + " " + jars);
+        }
+        out.println("-- " + indexes.size() + " jars, " + bytes(total) + " in " + cache.dir()
+                + (stale > 0 ? "; " + stale + " stale (unused, a newer version cached, idle "
+                        + JarCache.STALE_AFTER.toDays() + " days), swept by a synchronize" : ""));
+        return 0;
     }
 
     /** {@code 500M}, {@code 2G}, {@code 64K}, or plain bytes; binary units, case ignored. */
@@ -421,11 +461,19 @@ public final class Concordance {
 
                   --jar-cache <dir>           use this jar cache rather than the default
 
-                concordance cache [prune <size>]
+                concordance cache [list | purge | prune <size>]
 
                   (alone)                     where the jar cache is, how many jars it holds, its size
+                  list                        every jar index in it, largest first: its size, when it was
+                                              last used, how many projects use it, the jar it is of
+                  purge                       delete every jar index; each is indexed again when a project
+                                              next needs it
                   prune   <size>              trim it to <size> (500M, 2G, 0), least recently used first;
                                               a pruned jar is indexed again when a project next needs it
+
+                  The cache tidies itself: the index of what a jar's path held before goes as soon as
+                  the path holds a new build, and an index no project uses, of a version older than one
+                  cached, goes once it has been idle 3 days. The newest version is never dropped on its own.
 
                 <project> is a directory holding a pom.xml, or the pom.xml itself.
 

@@ -17,7 +17,7 @@ import java.util.Optional;
  * does not reproduce every corner of Maven's list-nesting rules, which matter only between exotic versions of
  * the same artifact.
  */
-final class Versions {
+public final class Versions {
 
     private Versions() {}
 
@@ -98,7 +98,8 @@ final class Versions {
 
     // --- ordering -------------------------------------------------------------------------------
 
-    static int compare(String a, String b) {
+    /** Negative, zero or positive as {@code a} is an older version than {@code b}, the same one, or a newer one. */
+    public static int compare(String a, String b) {
         List<Object> x = items(a);
         List<Object> y = items(b);
         for (int i = 0; i < Math.max(x.size(), y.size()); i++) {

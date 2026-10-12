@@ -188,6 +188,24 @@ class ConcordanceTest {
     }
 
     @Test
+    void cacheListShowsEachIndexAndPurgeEmptiesIt(@TempDir Path dir, @TempDir Path repo, @TempDir Path cache)
+            throws IOException {
+        Path jar = polygonJar(repo);
+        run(project(dir), "summary", "--sources", jar.toString(), "--jar-cache", cache.toString());
+
+        Run listed = bare("cache", "list", "--jar-cache", cache.toString());
+        assertEquals(0, listed.code(), listed.err());
+        assertTrue(listed.out().contains(" sources  1 project "), listed.out());
+        assertTrue(listed.out().contains("-- 1 jars, "), listed.out());
+
+        Run purged = bare("cache", "purge", "--jar-cache", cache.toString());
+        assertEquals(0, purged.code(), purged.err());
+        assertTrue(purged.out().startsWith("purged 1 of 1 jars, "), purged.out());
+        assertTrue(bare("cache", "--jar-cache", cache.toString()).out().trim()
+                .endsWith(": 0 jars, 0 bytes"), "stamps and project records went too");
+    }
+
+    @Test
     void cachePruneToARoomySizeKeepsEverything(@TempDir Path dir, @TempDir Path repo, @TempDir Path cache)
             throws IOException {
         run(project(dir), "summary", "--sources", polygonJar(repo).toString(), "--jar-cache", cache.toString());

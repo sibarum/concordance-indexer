@@ -326,6 +326,10 @@ public final class ProjectIndex {
                 || !List.copyOf(nextArchives.keySet()).equals(List.copyOf(archives.keySet()));
         entries = nextEntries;
         archives = nextArchives;
+        if (jarCache != null) {
+            jarCache.used(root, nextArchives.values().stream().map(Archive::digest).toList());
+            jarCache.sweepIfDue();
+        }
         if (!sync.added.isEmpty() || !sync.changed.isEmpty() || !removed.isEmpty() || reordered) {
             index = null;
             corpus = null;
