@@ -150,8 +150,7 @@ public final class DependencyResolver {
                 }
                 out.add(new Dependency(coordinates, d.type(), d.classifier(), scope, next.depth(),
                         present(repository.file(coordinates, classifierOf(d), extensionOf(d.type()))),
-                        d.type().equals("pom") ? null
-                                : present(repository.file(coordinates, sourcesClassifierOf(d), "jar"))));
+                        d.type().equals("pom") ? null : sourcesOf(repository, coordinates, d)));
             }
 
             Optional<Poms.Effective> pom = poms.fromCoordinates(coordinates);
@@ -201,8 +200,14 @@ public final class DependencyResolver {
         };
     }
 
-    private static String sourcesClassifierOf(Poms.Declared d) {
-        return d.type().equals("test-jar") || d.classifier().equals("tests") ? "test-sources" : "sources";
+    /**
+     * The library's source text: its Concordance library file ({@code -concordance.jar}, a sources jar with its
+     * index prebuilt) when there is one, else its {@code -sources.jar}; null when neither is there.
+     */
+    private static Path sourcesOf(LocalRepository repository, Coordinates coordinates, Poms.Declared d) {
+        boolean tests = d.type().equals("test-jar") || d.classifier().equals("tests");
+        Path prebuilt = present(repository.file(coordinates, tests ? "test-concordance" : "concordance", "jar"));
+        return prebuilt != null ? prebuilt : present(repository.file(coordinates, tests ? "test-sources" : "sources", "jar"));
     }
 
     private static String extensionOf(String type) {

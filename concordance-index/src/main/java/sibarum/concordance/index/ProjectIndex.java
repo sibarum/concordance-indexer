@@ -55,6 +55,8 @@ import java.util.zip.ZipFile;
  * {@link IndexBuilder#collectExports}. A jar is stamped as a whole, exactly as a file is, so an unchanged one is
  * not even opened — the usual case, since a released jar in a local repository never changes. One that has
  * changed, a reinstalled snapshot say, is read through, and only the entries whose content differs are reparsed.
+ * A {@link LibraryFile} is a sources jar that carries its index: one whose index this Concordance can use is not
+ * parsed at all.
  *
  * <p><b>Order</b> is the order of the files given to {@link #synchronize}, then each jar in the order given and
  * its entries by name. Files alone give the same index, list for list, as {@link IndexBuilder#buildFiles} over
@@ -120,10 +122,11 @@ public final class ProjectIndex {
      * holds. A file whose stat changed but whose content did not is unchanged: it was not reparsed, and nothing
      * in the index moved. {@code fromCache} counts the added or changed jars that were loaded from the
      * {@link JarCache} rather than read, and {@code unhashed} how many of those it recognised by a stamp, without
-     * reading the jar even to hash it.
+     * reading the jar even to hash it. {@code prebuilt} counts the added or changed jars that were
+     * {@link LibraryFile library files} whose own index this Concordance could use.
      */
     public record Changes(List<Path> added, List<Path> changed, List<Path> removed, int unchanged, int fromCache,
-                          int unhashed) {
+                          int unhashed, int prebuilt) {
 
         public Changes {
             added = List.copyOf(added);
@@ -140,7 +143,8 @@ public final class ProjectIndex {
         public String toString() {
             return added.size() + " added, " + changed.size() + " changed, " + removed.size() + " removed, "
                     + unchanged + " unchanged" + (fromCache > 0 ? ", " + fromCache + " jars from the cache" : "")
-                    + (unhashed > 0 ? " (" + unhashed + " by their stamp)" : "");
+                    + (unhashed > 0 ? " (" + unhashed + " by their stamp)" : "")
+                    + (prebuilt > 0 ? ", " + prebuilt + " prebuilt" : "");
         }
     }
 
@@ -334,7 +338,8 @@ public final class ProjectIndex {
             index = null;
             corpus = null;
         }
-        return new Changes(sync.added, sync.changed, removed, sync.unchanged, sync.fromCache, sync.unhashed);
+        return new Changes(sync.added, sync.changed, removed, sync.unchanged, sync.fromCache, sync.unhashed,
+                sync.prebuilt);
     }
 
     /**
@@ -349,6 +354,7 @@ public final class ProjectIndex {
         int unchanged;
         int fromCache;
         int unhashed;
+        int prebuilt;
         final JarCache jarCache;
         private ParseWorker worker;
 
@@ -421,6 +427,26 @@ public final class ProjectIndex {
                     if (jarCache != null && modified != UNTRUSTED) {
                         jarCache.remember(jar, Files.size(jar), modified, digest);
                     }
+                    List<String> problems = new ArrayList<>();
+                    Set<String> exportedPackages = null;
+                    if (!compiled) {
+                        Optional<LibraryFile.Opened> library;
+                        try {
+                            library = LibraryFile.open(jar, limits);
+                        } catch (IOException unreadable) {
+                            library = Optional.empty();   // reading it as a sources jar reports what is wrong
+                        }
+                        if (library.isPresent()) {
+                            if (library.get().contents().isPresent()) {
+                                prebuilt++;
+                                var contents = library.get().contents().get();
+                                return new Archive(jar, Files.size(jar), modified, digest, contents.entries(),
+                                        contents.problems(), false);
+                            }
+                            library.get().problem().ifPresent(problems::add);
+                            exportedPackages = library.get().exportedPackages();
+                        }
+                    }
                     if (jarCache != null) {
                         var cached = jarCache.load(digest, compiled, jar, limits);
                         if (cached.isPresent()) {
@@ -429,10 +455,10 @@ public final class ProjectIndex {
                                     cached.get().problems(), compiled);
                         }
                     }
-                    List<String> problems = new ArrayList<>();
                     List<Entry> entries;
                     try {
-                        entries = compiled ? classEntriesOf(jar, problems) : entriesOf(jar, old, problems);
+                        entries = compiled ? classEntriesOf(jar, problems)
+                                : entriesOf(jar, old, exportedPackages, problems);
                     } catch (IOException unreadable) {
                         // A jar the zip reader refuses is a problem of that jar, not of the synchronize.
                         problems.add("not a readable zip: " + unreadable.getMessage());
@@ -453,8 +479,12 @@ public final class ProjectIndex {
          * <p>Entries are found through the jar's central directory, as {@link Source.InArchive#read} finds them
          * again: a jar whose local headers tell a different story from its directory cannot show one text to the
          * index and another to the reader.
+         *
+         * <p>{@code exportedPackages}, when not null, says what is exported in place of {@code module-info.java}:
+         * a {@link LibraryFile} made from classes carries its {@code module-info.class}'s word in its manifest.
          */
-        private List<Entry> entriesOf(Path jar, Archive old, List<String> problems) throws IOException {
+        private List<Entry> entriesOf(Path jar, Archive old, Set<String> exportedPackages, List<String> problems)
+                throws IOException {
             try (ZipFile zip = new ZipFile(jar.toFile())) {
                 Map<String, ZipEntry> named = new TreeMap<>();
                 for (Enumeration<? extends ZipEntry> all = zip.entries(); all.hasMoreElements(); ) {
@@ -475,10 +505,11 @@ public final class ProjectIndex {
                 long[] budget = {limits.maxArchiveSourceBytes()};
                 byte[] moduleInfo = named.containsKey(MODULE_INFO) ? take(zip, named.get(MODULE_INFO), budget) : null;
                 Entry oldModuleInfo = known.get(MODULE_INFO);
-                boolean exportsSame = moduleInfo == null
+                boolean exportsSame = exportedPackages == null && (moduleInfo == null
                         ? oldModuleInfo == null
-                        : oldModuleInfo != null && Arrays.equals(oldModuleInfo.digest(), digest(moduleInfo));
-                Set<String> exported = moduleInfo == null ? null : worker().exportsOf(moduleInfo);
+                        : oldModuleInfo != null && Arrays.equals(oldModuleInfo.digest(), digest(moduleInfo)));
+                Set<String> exported = exportedPackages != null ? exportedPackages
+                        : moduleInfo == null ? null : worker().exportsOf(moduleInfo);
 
                 List<Entry> out = new ArrayList<>();
                 for (Map.Entry<String, ZipEntry> each : named.entrySet()) {

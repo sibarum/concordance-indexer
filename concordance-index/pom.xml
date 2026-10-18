@@ -33,8 +33,35 @@
             <artifactId>vineflower</artifactId>
         </dependency>
         <dependency>
+            <groupId>sibarum.intrabuf</groupId>
+            <artifactId>intrabuf-runtime</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>sibarum.intrabuf</groupId>
+                            <artifactId>intrabuf-processor</artifactId>
+                            <version>${intrabuf.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs>
+                        <!-- A -SNAPSHOT version marks what this build writes as a dev payload, checked for drift. -->
+                        <arg>-Aintrabuf.buildVersion=${project.version}</arg>
+                        <arg>-Aintrabuf.module=${project.artifactId}</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

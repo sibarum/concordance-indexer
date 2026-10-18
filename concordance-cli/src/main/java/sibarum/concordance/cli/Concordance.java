@@ -3,6 +3,8 @@ package sibarum.concordance.cli;
 import sibarum.concordance.index.Hit;
 import sibarum.concordance.index.Index;
 import sibarum.concordance.index.JarCache;
+import sibarum.concordance.index.LibraryFile;
+import sibarum.concordance.index.Limits;
 import sibarum.concordance.index.NameGroup;
 import sibarum.concordance.index.NameGroups;
 import sibarum.concordance.index.Plan;
@@ -22,6 +24,7 @@ import sibarum.concordance.project.MavenProjectReader;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -43,6 +46,7 @@ import java.util.Map;
  * concordance <project> search <fragment> [--recent <file> ...]
  * concordance <project> <query> [args] [--libraries] [--sources <jar> ...]
  * concordance cache [list | purge | prune <size>] [--jar-cache <dir>]
+ * concordance export <jar> [<out>]
  * }</pre>
  *
  * <p>Output is one result per line, {@code path:line} first, so it pipes into anything that opens files —
@@ -91,6 +95,10 @@ public final class Concordance {
         if (args.length >= 1 && args[0].equals("cache")
                 && (args.length == 1 || List.of("prune", "list", "purge").contains(args[1]))) {
             return cache(cache, args, out, err);
+        }
+        // Likewise "export" followed by a jar that exists; a project directory called export still works.
+        if (args.length >= 2 && args[0].equals("export") && Files.isRegularFile(Path.of(args[1]))) {
+            return export(args, out, err);
         }
         if (args.length < 2) {
             usage(err);
@@ -141,6 +149,7 @@ public final class Concordance {
                         + jars.size() + " sources jars, " + classJars.size() + " class jars"
                         + (changes.fromCache() > 0 ? " (" + changes.fromCache() + " from the jar cache"
                                 + (changes.unhashed() > 0 ? ", " + changes.unhashed() + " without reading them" : "") + ")" : "")
+                        + (changes.prebuilt() > 0 ? " (" + changes.prebuilt() + " prebuilt)" : "")
                         + ", indexed in " + millis + " ms");
             }
             case "names" -> {
@@ -278,6 +287,26 @@ public final class Concordance {
     }
 
     /**
+     * A {@link LibraryFile} for one jar: its sources, or its classes decompiled, with their index prebuilt. Written
+     * to {@code args[2]}, else beside the jar as its {@code -concordance.jar}, where dependency resolution finds it.
+     */
+    private static int export(String[] args, PrintStream out, PrintStream err) {
+        Path jar = Path.of(args[1]);
+        Path target = args.length > 2 ? Path.of(args[2]) : LibraryFile.defaultFor(jar);
+        long started = System.nanoTime();
+        try {
+            LibraryFile.export(jar, target, Limits.DEFAULT);
+        } catch (IOException e) {
+            err.println("cannot export " + jar + ": " + e.getMessage());
+            return 1;
+        }
+        long millis = (System.nanoTime() - started) / 1_000_000;
+        out.println(target.toAbsolutePath().normalize() + ": " + bytes(target.toFile().length()) + ", made in "
+                + millis + " ms");
+        return 0;
+    }
+
+    /**
      * The jar cache: where it is and how much it holds; with {@code list}, each jar index in it; with {@code purge},
      * emptied; with {@code prune <size>}, trimmed to that size by dropping the least recently used jars first. A
      * dropped jar is simply indexed again the next time a project needs it.
@@ -386,7 +415,8 @@ public final class Concordance {
         for (Dependency d : classpath.dependencies()) {
             out.println(d.depth() + "  " + pad(d.scope(), 9) + " " + pad(d.coordinates().toString()
                     + (d.classifier().isEmpty() ? "" : ":" + d.classifier()), 60)
-                    + (d.sourcesJar() != null ? " sources" : d.jar() != null ? " jar only" : " missing"));
+                    + (d.prebuilt() ? " prebuilt" : d.sourcesJar() != null ? " sources"
+                            : d.jar() != null ? " jar only" : " missing"));
         }
         classpath.problems().forEach(p -> out.println("! " + p));
         out.println("-- " + classpath.dependencies().size() + " libraries, " + classpath.sourcesJars().size()
@@ -474,6 +504,14 @@ public final class Concordance {
                   The cache tidies itself: the index of what a jar's path held before goes as soon as
                   the path holds a new build, and an index no project uses, of a version older than one
                   cached, goes once it has been idle 3 days. The newest version is never dropped on its own.
+
+                concordance export <jar> [<out>]
+
+                  Makes a Concordance library file of a jar: its sources jar, or failing that its classes,
+                  decompiled -- the text, with the index prebuilt. Written to <out>, else beside the jar as
+                  its -concordance.jar, which --libraries then takes in place of the -sources.jar. It is a
+                  sources jar itself, so a Concordance that would index it differently reindexes it from
+                  its text; --sources <file> takes one from anywhere.
 
                 <project> is a directory holding a pom.xml, or the pom.xml itself.
 
