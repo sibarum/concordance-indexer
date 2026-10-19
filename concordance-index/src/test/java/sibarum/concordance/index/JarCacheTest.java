@@ -166,6 +166,44 @@ class JarCacheTest {
     }
 
     @Test
+    void anEntryInTheOldFormatIsAMissAndIsReplaced() throws IOException {
+        Path jar = widgets(dir.resolve("repo/widgets.jar"));
+        ProjectIndex first = project("one", cache());
+        first.synchronize(List.of(), List.of(jar));
+        try (Stream<Path> files = Files.list(dir.resolve("cache"))) {
+            Path entry = files.filter(JarCacheTest::isEntry).findFirst().orElseThrow();
+            // What 0.1.0 wrote: "CNCJ", its fingerprint, then an empty string table, problems and entries, "/CNC".
+            byte[] fingerprint = JarCache.fingerprint(Limits.DEFAULT).getBytes(StandardCharsets.UTF_8);
+            try (var out = new java.io.DataOutputStream(Files.newOutputStream(entry))) {
+                out.writeInt(0x434E434A);
+                out.writeInt(fingerprint.length);
+                out.write(fingerprint);
+                out.writeInt(0);
+                out.writeInt(0);
+                out.writeInt(0);
+                out.writeInt(0x2F434E43);
+            }
+        }
+        ProjectIndex second = project("two", cache());
+        assertEquals(0, second.synchronize(List.of(), List.of(jar)).fromCache());
+        assertEquals(first.index(), second.index());
+        assertEquals(1, project("three", cache()).synchronize(List.of(), List.of(jar)).fromCache(), "replaced");
+    }
+
+    @Test
+    void anEntryOfTheOtherKindIsAMiss() throws IOException {
+        Path jar = widgets(dir.resolve("repo/widgets.jar"));
+        project("one", cache()).synchronize(List.of(), List.of(jar));
+        try (Stream<Path> files = Files.list(dir.resolve("cache"))) {
+            Path entry = files.filter(JarCacheTest::isEntry).findFirst().orElseThrow();
+            String name = entry.getFileName().toString();
+            Files.move(entry, entry.resolveSibling(name.replace(".sources", ".classes")));
+        }
+        assertEquals(0, project("two", cache()).synchronize(List.of(), List.of(), List.of(jar)).fromCache(),
+                "an index of .java entries cannot stand for the jar's classes");
+    }
+
+    @Test
     void aCacheThatCannotBeWrittenIsACacheThatMissed() throws IOException {
         Path blocked = dir.resolve("blocked");
         Files.writeString(blocked, "a file where the cache directory would go");

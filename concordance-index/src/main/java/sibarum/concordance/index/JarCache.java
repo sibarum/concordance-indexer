@@ -1,6 +1,8 @@
 package sibarum.concordance.index;
 
 import sibarum.concordance.project.Versions;
+import sibarum.intrabuf.annotation.Field;
+import sibarum.intrabuf.annotation.IntrabufMessage;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -88,16 +90,27 @@ public final class JarCache {
         return dir;
     }
 
+    /**
+     * One cache file: the jar's index in the form a {@link LibraryFile} carries it, and the {@link #fingerprint} of
+     * the Concordance that built it. STRICT, so a file written by any other build of this schema does not decode,
+     * and neither does one in the cache's older format: either is a miss, and is written afresh.
+     */
+    @IntrabufMessage(name = "concordance.JarCacheEntry")
+    record Cached(@Field(nonNull = true) String fingerprint, @Field(nonNull = true) LibraryFile.Index index) {}
+
     /** The jar index for these bytes read this way, its sources placed in {@code jar}; empty on any miss. */
-    Optional<IndexCodec.JarContents> load(byte[] digest, boolean compiled, Path jar, Limits limits) {
+    Optional<LibraryFile.Contents> load(byte[] digest, boolean compiled, Path jar, Limits limits) {
         Path file = fileFor(digest, compiled);
         try {
-            Optional<IndexCodec.JarContents> found = IndexCodec.readJar(file, jar, compiled, fingerprint(limits));
-            if (found.isPresent()) {
-                Files.setLastModifiedTime(file, FileTime.from(Instant.now()));   // what prune counts as use
+            Cached cached = JarCache_CachedIntrabuf.fromBytes(Files.readAllBytes(file));
+            if (!cached.fingerprint().equals(fingerprint(limits)) || cached.index().compiled() != compiled) {
+                return Optional.empty();
             }
-            return found;
+            LibraryFile.Contents found = LibraryFile.contents(cached.index(), jar);
+            Files.setLastModifiedTime(file, FileTime.from(Instant.now()));   // what prune counts as use
+            return Optional.of(found);
         } catch (IOException | RuntimeException unusable) {
+            // Absent, truncated, from another build or format, or strings out of its table: index the jar.
             return Optional.empty();
         }
     }
@@ -111,7 +124,9 @@ public final class JarCache {
                 || archive.entries().stream().anyMatch(e -> e.problem().startsWith("interrupted"));
         if (transient_) return;
         try {
-            IndexCodec.writeJar(archive, fileFor(archive.digest(), archive.compiled()), fingerprint(limits));
+            Cached cached = new Cached(fingerprint(limits),
+                    LibraryFile.index(archive.compiled(), archive.entries(), archive.problems()));
+            write(fileFor(archive.digest(), archive.compiled()), JarCache_CachedIntrabuf.toBytes(cached));
         } catch (IOException | RuntimeException unwritable) {
             // A read-only home, a full disk: the next synchronize indexes the jar again, which is all a miss costs.
         }
@@ -445,10 +460,17 @@ public final class JarCache {
 
     /** Writes {@code lines} to a sibling of {@code file} and moves it into place. */
     private static void write(Path file, List<String> lines) throws IOException {
+        StringBuilder text = new StringBuilder();
+        lines.forEach(line -> text.append(line).append(System.lineSeparator()));
+        write(file, text.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Writes {@code bytes} to a sibling of {@code file} and moves it into place. */
+    private static void write(Path file, byte[] bytes) throws IOException {
         Files.createDirectories(file.getParent());
         Path partial = Files.createTempFile(file.getParent(), file.getFileName().toString(), ".partial");
         try {
-            Files.write(partial, lines);
+            Files.write(partial, bytes);
             try {
                 Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException e) {

@@ -93,11 +93,18 @@ public final class LibraryFile {
                     List<String> exportedPackages) {}
 
     /**
-     * What each entry exports. Every string is an index into {@code strings}, since owners, qualified names and
-     * kinds repeat a great deal and intrabuf writes a string wherever it occurs.
+     * What each entry of one jar exports: the index a library file carries, and what the {@link JarCache} keeps for
+     * each jar. Every string is an index into {@code strings}, since owners, qualified names and kinds repeat a great
+     * deal and intrabuf writes a string wherever it occurs.
+     *
+     * <p>{@code compiled} says what the entries name. In a library file they are always {@code .java} entries, placed
+     * as {@link Source.InArchive}; a jar the cache read for its classes has one entry per top-level class file, placed
+     * as {@link Source.Decompiled}. Neither kind records a modification time or references, which an archive's
+     * entries never have.
      */
     @IntrabufMessage(name = "concordance.LibraryIndex")
-    record Index(@Field(nonNull = true) List<String> strings,
+    record Index(boolean compiled,
+                 @Field(nonNull = true) List<String> strings,
                  @Field(nonNull = true) List<Integer> problems,
                  @Field(nonNull = true) List<IndexedEntry> entries) {}
 
@@ -115,7 +122,10 @@ public final class LibraryFile {
      * What opening a library file found: the packages its manifest says are exported (null when its text decides),
      * its index when this Concordance can use it, and anything worth reporting about the file.
      */
-    record Opened(Set<String> exportedPackages, Optional<IndexCodec.JarContents> contents, Optional<String> problem) {}
+    record Opened(Set<String> exportedPackages, Optional<Contents> contents, Optional<String> problem) {}
+
+    /** What an {@link Index} holds, its sources placed in the jar it is loaded for. */
+    record Contents(List<ProjectIndex.Entry> entries, List<String> problems) {}
 
     // --- making one ---------------------------------------------------------------------------
 
@@ -169,7 +179,7 @@ public final class LibraryFile {
         Manifest manifest = new Manifest(compiled ? Origin.CLASSES : Origin.SOURCES, HexFormat.of().formatHex(digest),
                 JarCache.fingerprint(limits), exported == null ? null : List.copyOf(exported));
         write(out, texts, LibraryFile_ManifestIntrabuf.toBytes(manifest),
-                LibraryFile_IndexIntrabuf.toBytes(index(entries, archive.problems())));
+                LibraryFile_IndexIntrabuf.toBytes(index(false, entries, archive.problems())));
         return out;
     }
 
@@ -223,7 +233,8 @@ public final class LibraryFile {
         }
     }
 
-    private static Index index(List<ProjectIndex.Entry> entries, List<String> problems) {
+    /** A jar's entries and problems as an {@link Index}, its entries of the kind {@code compiled} says. */
+    static Index index(boolean compiled, List<ProjectIndex.Entry> entries, List<String> problems) {
         Map<String, Integer> table = new LinkedHashMap<>();
         List<Integer> problemRefs = problems.stream().map(p -> ref(table, p)).toList();
         List<IndexedEntry> indexed = new ArrayList<>();
@@ -234,10 +245,15 @@ public final class LibraryFile {
                         ref(table, s.qualified()), s.at().line(), s.at().column(),
                         s.supers().stream().map(p -> ref(table, p)).toList()));
             }
-            indexed.add(new IndexedEntry(ref(table, ((Source.InArchive) entry.source()).entry()), entry.size(),
-                    entry.digest(), symbols, ref(table, entry.problem())));
+            String name = switch (entry.source()) {
+                case Source.InArchive a when !compiled -> a.entry();
+                case Source.Decompiled d when compiled -> d.entry();
+                default -> throw new IllegalArgumentException("not an entry of a jar read this way: " + entry.source());
+            };
+            indexed.add(new IndexedEntry(ref(table, name), entry.size(), entry.digest(), symbols,
+                    ref(table, entry.problem())));
         }
-        return new Index(List.copyOf(table.keySet()), problemRefs, indexed);
+        return new Index(compiled, List.copyOf(table.keySet()), problemRefs, indexed);
     }
 
     private static int ref(Map<String, Integer> table, String s) {
@@ -329,8 +345,9 @@ public final class LibraryFile {
                     return Optional.of(new Opened(exported, Optional.empty(),
                             Optional.of("its prebuilt index is missing or over the limit, so it is indexed from its text")));
                 }
-                return Optional.of(new Opened(exported, Optional.of(contents(LibraryFile_IndexIntrabuf.fromBytes(bytes), jar)),
-                        Optional.empty()));
+                Index index = LibraryFile_IndexIntrabuf.fromBytes(bytes);
+                if (index.compiled()) throw new IllegalArgumentException("its entries are class files, not text");
+                return Optional.of(new Opened(exported, Optional.of(contents(index, jar)), Optional.empty()));
             } catch (RuntimeException | IOException broken) {
                 // Truncated, from another build, or strings out of the table: no index here to use.
                 return Optional.of(new Opened(exported, Optional.empty(),
@@ -344,12 +361,19 @@ public final class LibraryFile {
         return new Opened(null, Optional.empty(), Optional.of(why + ", so it is indexed as a sources jar"));
     }
 
-    private static IndexCodec.JarContents contents(Index index, Path jar) {
+    /**
+     * What {@code index} holds, its sources placed in {@code jar}.
+     *
+     * @throws RuntimeException when the index does not hold together: a string out of its table, a kind that does
+     *                          not exist
+     */
+    static Contents contents(Index index, Path jar) {
         String[] table = index.strings().toArray(String[]::new);
         List<String> problems = index.problems().stream().map(i -> table[i]).toList();
         List<ProjectIndex.Entry> entries = new ArrayList<>();
         for (IndexedEntry e : index.entries()) {
-            Source source = new Source.InArchive(jar, table[e.name()]);
+            Source source = index.compiled() ? new Source.Decompiled(jar, table[e.name()])
+                    : new Source.InArchive(jar, table[e.name()]);
             List<Symbol> symbols = new ArrayList<>();
             for (IndexedSymbol s : e.symbols()) {
                 symbols.add(new Symbol(Symbol.Kind.valueOf(table[s.kind()]), table[s.name()], table[s.owner()],
@@ -358,7 +382,7 @@ public final class LibraryFile {
             }
             entries.add(new ProjectIndex.Entry(source, e.size(), 0, e.digest(), symbols, List.of(), table[e.problem()]));
         }
-        return new IndexCodec.JarContents(entries, problems);
+        return new Contents(entries, problems);
     }
 
     /** An entry's bytes, within {@code limit}; null when it is absent or over. */
