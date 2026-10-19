@@ -52,8 +52,10 @@
         <vineflower.version>1.12.0</vineflower.version>
         <!-- Intrabuf encodes a library file's manifest and its prebuilt index (see LibraryFile): generated codecs,
              nothing reflective, so it crosses native-image as the parser does. We own it, like Cardinal; the
-             release is in the local .m2 from `mvn install` in the sibling intrabuf repo. -->
-        <intrabuf.version>0.1.0</intrabuf.version>
+             build is in the local .m2 from `mvn install` in the sibling intrabuf repo. Kept on the version the
+             VexelRay automation stack uses: a consumer of both resolves one intrabuf-runtime, and codecs generated
+             against another version fail at run time (NoSuchMethodError on MessageCodec). -->
+        <intrabuf.version>0.1.1-SNAPSHOT</intrabuf.version>
         <junit.version>5.11.4</junit.version>
     </properties>
 
