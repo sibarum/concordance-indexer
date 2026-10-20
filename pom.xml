@@ -6,7 +6,7 @@
 
     <groupId>sibarum.concordance</groupId>
     <artifactId>concordance-indexer</artifactId>
-    <version>0.1.1-SNAPSHOT</version>
+    <version>0.1.1</version>
     <packaging>pom</packaging>
 
     <name>Concordance Indexer</name>
@@ -41,8 +41,8 @@
         <!-- Cardinal: the receipt-graph types, the notary, the issuers, and the symbolic vocabulary and reasoning
              underneath them. We own Cardinal, so a change Java needs is made there rather than worked around
              here. Installed to the local .m2 by `mvn install` in the sibling cardinal repo, the same arrangement
-             vexelray has with supirvast. Note the version is 1.1-SNAPSHOT, not 0.1.0. -->
-        <cardinal.version>1.1-SNAPSHOT</cardinal.version>
+             vexelray has with supirvast. Note the version is 1.1, not 0.1.0. -->
+        <cardinal.version>1.1</cardinal.version>
         <!-- JavaParser 3.28.2 parses Java 25 completely; we drive it at LanguageLevel.RAW so nothing reflects.
              See docs/javaparser-evaluation.md for why, and for why its symbol solver is test-scope only. -->
         <javaparser.version>3.28.2</javaparser.version>
@@ -55,7 +55,7 @@
              build is in the local .m2 from `mvn install` in the sibling intrabuf repo. Kept on the version the
              VexelRay automation stack uses: a consumer of both resolves one intrabuf-runtime, and codecs generated
              against another version fail at run time (NoSuchMethodError on MessageCodec). -->
-        <intrabuf.version>0.1.1-SNAPSHOT</intrabuf.version>
+        <intrabuf.version>0.1.1</intrabuf.version>
         <junit.version>5.11.4</junit.version>
     </properties>
 
