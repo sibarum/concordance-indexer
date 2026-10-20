@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <!-- Q1: does maven.ext.class.path from .mvn/ load the extension, and from where is a relative path resolved?
+         run.sh writes .mvn/jvm.config or .mvn/maven.config per case. -->
+    <groupId>probe</groupId>
+    <artifactId>q1</artifactId>
+    <version>1</version>
+    <packaging>pom</packaging>
+    <modules>
+        <module>sub</module>
+    </modules>
+</project>

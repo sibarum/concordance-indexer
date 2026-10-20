@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>probe</groupId>
+    <artifactId>served-parent</artifactId>
+    <version>1</version>
+    <packaging>pom</packaging>
+    <!-- Only reachable through the probe WorkspaceReader. q23 sees this property only if the parent was served. -->
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <probe.parent.marker>parent pom came from the WorkspaceReader</probe.parent.marker>
+    </properties>
+</project>

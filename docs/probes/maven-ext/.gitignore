@@ -1,0 +1,5 @@
+target/
+**/.mvn/ext/
+# written per case by run-q1*.sh
+q1/.mvn/jvm.config
+q1/.mvn/maven.config

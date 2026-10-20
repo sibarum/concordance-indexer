@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <!-- Q2/Q3: parent, imported BOM and probe:served exist only in the probe WorkspaceReader's served/ directory.
+         javaparser-core 3.28.2 is also in ~/.m2; the reader serves a different jar under that coordinate. -->
+    <parent>
+        <groupId>probe</groupId>
+        <artifactId>served-parent</artifactId>
+        <version>1</version>
+        <relativePath/>
+    </parent>
+    <artifactId>q23</artifactId>
+    <version>1</version>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>probe</groupId>
+                <artifactId>served-bom</artifactId>
+                <version>1</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>probe</groupId>
+            <artifactId>served</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-core</artifactId>
+            <version>3.28.2</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
