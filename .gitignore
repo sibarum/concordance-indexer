@@ -12,3 +12,4 @@ cp-*.txt
 jpjar.txt
 *.log
 capcache/
+.claude/
