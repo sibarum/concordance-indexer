@@ -1,5 +1,6 @@
 package sibarum.concordance.cli;
 
+import sibarum.concordance.index.EffectiveDependencies;
 import sibarum.concordance.index.Hit;
 import sibarum.concordance.index.Index;
 import sibarum.concordance.index.JarCache;
@@ -19,6 +20,7 @@ import sibarum.concordance.project.Classpath;
 import sibarum.concordance.project.Dependency;
 import sibarum.concordance.project.DependencyResolver;
 import sibarum.concordance.project.LocalRepository;
+import sibarum.concordance.project.MavenModule;
 import sibarum.concordance.project.MavenProject;
 import sibarum.concordance.project.MavenProjectReader;
 
@@ -42,6 +44,7 @@ import java.util.Map;
  * concordance <project> impls <type> [method]
  * concordance <project> summary
  * concordance <project> deps
+ * concordance <project> effective
  * concordance <project> show <name>
  * concordance <project> search <fragment> [--recent <file> ...]
  * concordance <project> <query> [args] [--libraries] [--sources <jar> ...]
@@ -118,7 +121,7 @@ public final class Concordance {
             if (command.equals("deps")) {
                 return deps(project, out);
             }
-            if (libraries) {
+            if (libraries || command.equals("effective")) {
                 classpath = DependencyResolver.resolve(project, LocalRepository.locate());
                 jars.addAll(classpath.sourcesJars());
                 classpath.withoutSources().stream().map(Dependency::jar).filter(java.util.Objects::nonNull)
@@ -180,6 +183,14 @@ public final class Concordance {
             case "show" -> {
                 if (args.length < 3) return missing(err, "show", "<name>");
                 return show(index, args[2], out, err);
+            }
+            case "effective" -> {
+                try {
+                    return effective(project, built, millis, out);
+                } catch (IOException e) {
+                    err.println("cannot read " + root + ": " + e.getMessage());
+                    return 1;
+                }
             }
             case "search" -> {
                 if (args.length < 3) return missing(err, "search", "<fragment>");
@@ -426,6 +437,50 @@ public final class Concordance {
     }
 
     /**
+     * Module by module, which libraries its code links to and which it only declares: the used ones with how many
+     * files link to them, the ones used but only reached through another with the declaration that brings them,
+     * the declared ones nothing links to, and the declared ones nothing was indexed of. Libraries reached through
+     * others and not linked to are only counted.
+     */
+    private static int effective(MavenProject project, ProjectIndex built, long millis, PrintStream out)
+            throws IOException {
+        long started = System.nanoTime();
+        LocalRepository repository = LocalRepository.locate();
+        List<MavenModule> modules = project.codeModules();
+        for (MavenModule module : modules) {
+            List<Path> files = module.javaFiles();
+            EffectiveDependencies effective = EffectiveDependencies.of(built.corpus(),
+                    DependencyResolver.resolve(project, module, repository), files);
+            out.println("== " + module.artifactId() + " (" + files.size() + " files)");
+            for (EffectiveDependencies.Use use : effective.uses()) {
+                Dependency d = use.dependency();
+                String linking = use.from().size() == 1 ? "1 file" : use.from().size() + " files";
+                String said = switch (use.status()) {
+                    case USED -> use.from().isEmpty() ? "through what it brings" : linking;   // a pom dependency
+                    case UNDECLARED -> linking + ", through " + d.via().getFirst();
+                    case UNUSED -> "nothing links to it";
+                    case UNKNOWN -> "nothing of it indexed: " + (d.jar() == null ? "not in the local repository"
+                            : "no sources and no classes read");
+                    case TRANSITIVE -> null;
+                };
+                if (said == null) continue;
+                out.println(pad(use.status().name().toLowerCase(java.util.Locale.ROOT), 11) + " "
+                        + pad(d.coordinates() + (d.classifier().isEmpty() ? "" : ":" + d.classifier()), 60)
+                        + " " + said);
+            }
+            out.println("-- " + effective.with(EffectiveDependencies.Status.USED).size() + " used, "
+                    + effective.with(EffectiveDependencies.Status.UNDECLARED).size() + " used but undeclared, "
+                    + effective.with(EffectiveDependencies.Status.UNUSED).size() + " unused, "
+                    + effective.with(EffectiveDependencies.Status.UNKNOWN).size() + " unknown, "
+                    + effective.with(EffectiveDependencies.Status.TRANSITIVE).size() + " only for other libraries");
+        }
+        long worked = (System.nanoTime() - started) / 1_000_000;
+        out.println("-- effective dependencies of " + modules.size() + " modules (indexed in " + millis
+                + " ms, worked out in " + worked + " ms)");
+        return 0;
+    }
+
+    /**
      * One name: on one line when it has one declaration, otherwise a header and a line per declaration — the
      * choice an editor offers when an overloaded name is picked. {@code total} counts declarations already shown
      * under an earlier stage too, so a group that grew says so.
@@ -478,6 +533,12 @@ public final class Concordance {
                                               has no sources; a name with several declarations lists them
                   deps                        the libraries main source can name, nearest first, from the
                                               local repository, and what could not be resolved
+                  effective                   per module, the libraries its code links to set against
+                                              the ones it declares: used, used but only reached through
+                                              another (and which), declared but unused; indexes them
+                                              as --libraries does. Linking is read from imports and type
+                                              names, so a library used only by reflection or a service
+                                              loader shows as unused
 
                   --recent <file>             a file open in the editor, searched first; repeatable,
                                               most recent first

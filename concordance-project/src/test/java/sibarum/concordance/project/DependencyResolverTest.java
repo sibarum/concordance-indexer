@@ -99,6 +99,17 @@ class DependencyResolverTest {
     }
 
     @Test
+    void eachDependencySaysWhatItWasReachedThrough() throws IOException {
+        artifact("lib:a:1", true, dep("lib:b:1"));
+        artifact("lib:b:1", false, dep("lib:c:1"));
+        artifact("lib:c:1", true);
+        Classpath cp = resolve(depending(dep("lib:a:1")));
+
+        assertEquals(List.of("", "lib:a:1", "lib:a:1 lib:b:1"), cp.dependencies().stream()
+                .map(d -> String.join(" ", d.via().stream().map(Coordinates::toString).toList())).toList());
+    }
+
+    @Test
     void onlyWhatMainSourceCanSeeIsResolved() throws IOException {
         artifact("lib:a:1", true, dep("lib:rt:1", scope("runtime")), dep("lib:prov:1", scope("provided")),
                 dep("lib:t:1", scope("test")));

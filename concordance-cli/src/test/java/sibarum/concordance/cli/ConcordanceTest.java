@@ -234,6 +234,62 @@ class ConcordanceTest {
         assertThrows(IllegalArgumentException.class, () -> Concordance.parseSize("9999999999G"));
     }
 
+    /** {@code lib:<artifact>:1} in a local repository: a pom with these dependencies, and a sources jar. */
+    private static void artifact(Path repo, String artifact, String type, String dependencies) throws IOException {
+        Path at = repo.resolve("lib/" + artifact + "/1");
+        Files.createDirectories(at);
+        Files.writeString(at.resolve(artifact + "-1.pom"), """
+                <project><groupId>lib</groupId><artifactId>%s</artifactId><version>1</version>
+                <dependencies>%s</dependencies></project>
+                """.formatted(artifact, dependencies));
+        try (var zip = new java.util.zip.ZipOutputStream(Files.newOutputStream(at.resolve(artifact + "-1-sources.jar")))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry(type.replace('.', '/') + ".java"));
+            int dot = type.lastIndexOf('.');
+            zip.write(("package " + type.substring(0, dot) + "; public class " + type.substring(dot + 1) + " {}")
+                    .getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        Files.writeString(at.resolve(artifact + "-1.jar"), "jar");
+    }
+
+    @Test
+    void effectiveSetsWhatTheCodeLinksToAgainstWhatThePomDeclares(@TempDir Path dir, @TempDir Path repo,
+                                                                  @TempDir Path cache) throws IOException {
+        String dependency = "<dependency><groupId>lib</groupId><artifactId>%s</artifactId><version>1</version></dependency>";
+        artifact(repo, "shapes", "lib.shapes.Polygon", dependency.formatted("geometry"));
+        artifact(repo, "geometry", "lib.geometry.Point", "");
+        artifact(repo, "spare", "lib.spare.Spare", "");
+        Files.writeString(dir.resolve("pom.xml"), """
+                <project><groupId>demo</groupId><artifactId>demo</artifactId><version>1</version>
+                <dependencies>%s%s</dependencies></project>
+                """.formatted(dependency.formatted("shapes"), dependency.formatted("spare")));
+        Path src = dir.resolve("src/main/java/demo");
+        Files.createDirectories(src);
+        Files.writeString(src.resolve("Scene.java"), """
+                package demo;
+                import lib.shapes.Polygon;
+                import lib.geometry.Point;
+                class Scene { Polygon p; Point origin; }
+                """);
+
+        String before = System.getProperty("maven.repo.local");
+        System.setProperty("maven.repo.local", repo.toString());
+        try {
+            Run result = run(dir, "effective", "--jar-cache", cache.toString());
+            assertEquals(0, result.code(), result.err());
+            assertTrue(result.out().contains("== demo (1 files)"), result.out());
+            assertTrue(result.out().matches("(?s).*used +lib:shapes:1 +1 file\\R.*"), result.out());
+            assertTrue(result.out().matches("(?s).*undeclared +lib:geometry:1 +1 file, through lib:shapes:1\\R.*"),
+                    result.out());
+            assertTrue(result.out().matches("(?s).*unused +lib:spare:1 +nothing links to it\\R.*"), result.out());
+            assertTrue(result.out().contains("-- 1 used, 1 used but undeclared, 1 unused, 0 unknown, 0 only for"),
+                    result.out());
+        } finally {
+            if (before == null) System.clearProperty("maven.repo.local");
+            else System.setProperty("maven.repo.local", before);
+        }
+    }
+
     @Test
     void depsListsTheLibrariesAndSaysWhereFrom(@TempDir Path dir) throws IOException {
         Run result = run(project(dir), "deps");

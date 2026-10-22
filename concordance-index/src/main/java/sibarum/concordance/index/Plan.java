@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -27,9 +26,7 @@ import java.util.Set;
  * </ol>
  *
  * <p>A file links to a library source when it imports a type declared there, or names one through an import, a
- * wildcard import, or its fully qualified name. Imports are the one place a file says exactly which type it means,
- * so this is the reference graph read where it is precise: a file that merely uses a simple name another library
- * also happens to declare does not link to that library unless an import says so.
+ * wildcard import, or its fully qualified name; see {@link Links}.
  *
  * <p>A stage with nothing in it is left out, and no source is in two stages.
  */
@@ -103,17 +100,12 @@ public final class Plan {
         libraries.sort(Comparator.comparingInt(this::depthOf));
 
         // Which library source declares each type; the nearer jar wins a type two of them declare.
-        Map<String, Source> declaredBy = new HashMap<>();
-        for (Source s : libraries) {
-            corpus.slice(s).ifPresent(slice -> slice.symbols().stream()
-                    .filter(sym -> sym.kind().isType())
-                    .forEach(sym -> declaredBy.putIfAbsent(sym.qualified(), s)));
-        }
+        Map<String, Source> declaredBy = Links.declaredBy(corpus, libraries);
 
         Set<Source> linked = new LinkedHashSet<>();
         for (List<Source> from : List.of(open, project)) {
             for (Source s : from) {
-                corpus.slice(s).ifPresent(slice -> linksOf(slice, declaredBy, linked));
+                corpus.slice(s).ifPresent(slice -> Links.of(slice, declaredBy, linked));
             }
         }
         linked.removeAll(taken);
@@ -125,55 +117,6 @@ public final class Plan {
             if (!stage.sources().isEmpty()) stages.add(stage);
         }
         return stages;
-    }
-
-    /**
-     * Adds to {@code out}, in the order the file reaches them, the library sources one project file links to:
-     * through its imports, and through type names it writes, read against those imports.
-     */
-    private static void linksOf(Corpus.Slice slice, Map<String, Source> declaredBy, Set<Source> out) {
-        Map<String, String> single = new LinkedHashMap<>();   // simple name -> what it was imported as
-        List<String> wildcards = new ArrayList<>();
-        for (Reference r : slice.references()) {
-            if (r.kind() != Reference.Kind.IMPORT) continue;
-            String target = r.target();
-            if (target.endsWith(".*")) {
-                String scope = target.substring(0, target.length() - 2);
-                wildcards.add(scope);
-                link(scope, declaredBy, out);   // import static a.b.C.* links to C
-            } else {
-                single.put(r.name(), target);
-                // import a.b.C, or import static a.b.C.m: the type is the target or the target's owner.
-                if (!link(target, declaredBy, out)) {
-                    int dot = target.lastIndexOf('.');
-                    if (dot > 0) link(target.substring(0, dot), declaredBy, out);
-                }
-            }
-        }
-        for (Reference r : slice.references()) {
-            String written = switch (r.kind()) {
-                case TYPE_USE, EXTENDS, IMPLEMENTS -> r.target();
-                case CONSTRUCT -> r.name();
-                default -> null;
-            };
-            if (written == null) continue;
-            if (link(written, declaredBy, out)) continue;   // written fully qualified
-            int dot = written.indexOf('.');
-            String first = dot < 0 ? written : written.substring(0, dot);
-            String rest = dot < 0 ? "" : written.substring(dot);
-            String imported = single.get(first);
-            if (imported != null && link(imported + rest, declaredBy, out)) continue;
-            for (String scope : wildcards) {
-                if (link(scope + "." + written, declaredBy, out)) break;
-            }
-        }
-    }
-
-    private static boolean link(String qualified, Map<String, Source> declaredBy, Set<Source> out) {
-        Source s = declaredBy.get(qualified);
-        if (s == null) return false;
-        out.add(s);
-        return true;
     }
 
     private int depthOf(Source source) {

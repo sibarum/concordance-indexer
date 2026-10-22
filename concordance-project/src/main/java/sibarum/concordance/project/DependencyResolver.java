@@ -83,8 +83,12 @@ public final class DependencyResolver {
 
     // ------------------------------------------------------------------------------------------
 
-    /** One dependency waiting to be visited, with the scope and exclusions its path down to it imposes. */
-    private record Pending(Poms.Declared declared, int depth, String scope, List<String> exclusions) {}
+    /**
+     * One dependency waiting to be visited, with the scope and exclusions its path down to it imposes, and that path:
+     * the dependencies it is reached through.
+     */
+    private record Pending(Poms.Declared declared, int depth, String scope, List<String> exclusions,
+                           List<Coordinates> via) {}
 
     private static List<Dependency> resolve(Poms poms, MavenModule module, LocalRepository repository,
                                             Set<String> problems) {
@@ -95,7 +99,7 @@ public final class DependencyResolver {
         Deque<Pending> queue = new ArrayDeque<>();
         for (Poms.Declared d : root.dependencies()) {
             String scope = d.scope() == null ? "compile" : d.scope();
-            if (VISIBLE_SCOPES.contains(scope)) queue.add(new Pending(d, 1, scope, d.exclusions()));
+            if (VISIBLE_SCOPES.contains(scope)) queue.add(new Pending(d, 1, scope, d.exclusions(), List.of()));
         }
 
         List<Dependency> out = new ArrayList<>();
@@ -145,23 +149,25 @@ public final class DependencyResolver {
                 if (scope.equals("system")) {
                     Path jar = d.systemPath() == null ? null : Path.of(d.systemPath());
                     out.add(new Dependency(coordinates, d.type(), d.classifier(), scope, next.depth(),
-                            jar != null && Files.isRegularFile(jar) ? jar : null, null));
+                            jar != null && Files.isRegularFile(jar) ? jar : null, null, next.via()));
                     continue;   // a system dependency has no pom to follow
                 }
                 out.add(new Dependency(coordinates, d.type(), d.classifier(), scope, next.depth(),
                         present(repository.file(coordinates, classifierOf(d), extensionOf(d.type()))),
-                        d.type().equals("pom") ? null : sourcesOf(repository, coordinates, d)));
+                        d.type().equals("pom") ? null : sourcesOf(repository, coordinates, d), next.via()));
             }
 
             Optional<Poms.Effective> pom = poms.fromCoordinates(coordinates);
             if (pom.isEmpty()) continue;
+            List<Coordinates> via = new ArrayList<>(next.via());
+            via.add(coordinates);
             for (Poms.Declared child : pom.get().dependencies()) {
                 if (child.optional()) continue;
                 String childScope = transitiveScope(scope, child.scope() == null ? "compile" : child.scope());
                 if (childScope == null || excluded(next.exclusions(), child)) continue;
                 List<String> exclusions = new ArrayList<>(next.exclusions());
                 exclusions.addAll(child.exclusions());
-                queue.add(new Pending(child, next.depth() + 1, childScope, exclusions));
+                queue.add(new Pending(child, next.depth() + 1, childScope, exclusions, via));
             }
         }
         return out;
