@@ -26,6 +26,11 @@
             <artifactId>cardinal-receipts</artifactId>
         </dependency>
         <dependency>
+            <!-- SymExpr and Sort: the vocabulary a draft is written in, named directly, not just through receipts. -->
+            <groupId>sibarum.cardinal</groupId>
+            <artifactId>cardinal-core</artifactId>
+        </dependency>
+        <dependency>
             <groupId>sibarum.concordance</groupId>
             <artifactId>concordance-project</artifactId>
         </dependency>

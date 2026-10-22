@@ -84,6 +84,11 @@
                 <version>${cardinal.version}</version>
             </dependency>
             <dependency>
+                <groupId>sibarum.cardinal</groupId>
+                <artifactId>cardinal-core</artifactId>
+                <version>${cardinal.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.github.javaparser</groupId>
                 <artifactId>javaparser-core</artifactId>
                 <version>${javaparser.version}</version>
